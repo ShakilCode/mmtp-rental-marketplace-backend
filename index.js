@@ -4,6 +4,7 @@ import express from 'express';
 import dotenv from 'dotenv'
 // Import the mongoose to connect backend to the MongoDB
 import mongoose from 'mongoose'
+import userRouter from './router/userRouter.js';
 
 // reads .env file and loads values into process.env
 dotenv.config()
@@ -27,6 +28,9 @@ const app = express()
 
 // Body Parser (middleware)
 app.use(express.json())
+
+// Connect the user router
+app.use("/api/users", userRouter)
 
 // Start the server and make it listed for incoming requests on a specified port
 app.listen(process.env.PORT,
