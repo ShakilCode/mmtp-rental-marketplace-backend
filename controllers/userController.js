@@ -1,6 +1,8 @@
 import bcrypt from 'bcrypt'
 import dotenv from "dotenv"
 import User from '../models/userModel.js'
+// JWT (JSON Web Token) is used for login authentication
+import jwt from 'jsonwebtoken'
 
 dotenv.config()
 
@@ -91,12 +93,108 @@ export async function registerUser(req, res) {
         // Success response
         return res.status(201).json({
             message: "User registered successfully",
+            user: {
+                id: user._id,
+                email: user.email,
+                role: user.role
+            }
         })
 
     } catch (error) {
         // Server error handling
         return res.status(500).json({
             message: "User registration failed",
+            error: error.message
+        })
+    }
+}
+
+// Login User
+export async function loginUser(req, res) {
+    try {
+        let { email, password, rememberme } = req.body
+
+        // 1️ Normalize inputs
+        email = email?.trim().toLowerCase()
+        password = password?.trim()
+
+        // 2️ Check required fields
+        if (!email || !password) {
+            return res.status(400).json({
+                message: "Email and password are required"
+            })
+        }
+
+        // 3️ Email format validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({
+                message: "Invalid email format"
+            })
+        }
+
+        // 4️ Password basic check (min 6 chars)
+        if (password.length < 6) {
+            return res.status(400).json({
+                message: "Password must be at least 6 characters"
+            })
+        }
+
+        // 5️ Find user
+        const user = await User.findOne({ email })
+
+        if (!user) {
+            return res.status(401).json({
+                message: "User with given email not found"
+            })
+        }
+
+        // 6️ Check if user is blocked
+        if (user.isBlocked) {
+            return res.status(403).json({
+                message: "Your account is blocked. Please contact support for more information."
+            })
+        }
+
+        // 7️ Compare password (WITH pepper ⚠️)
+        const isPasswordValid = await bcrypt.compare(
+            password + process.env.PEPPER,
+            user.password
+        )
+
+        if (!isPasswordValid) {
+            return res.status(401).json({
+                message: "Invalid password"
+            })
+        }
+
+        // 8️ Generate JWT token
+        const token = jwt.sign(
+            {
+                id: user._id,
+                email: user.email,
+                role: user.role
+            },
+            process.env.JWT_SECRET,
+            {
+                expiresIn: rememberme ? "30d" : "48h"
+            }
+        )
+
+        // 9️ Success response
+        return res.status(200).json({
+            message: "Login successful",
+            token,
+            user: {
+                id: user._id,
+                email: user.email,
+                role: user.role
+            }
+        })
+
+    } catch (error) {
+        return res.status(500).json({
+            message: "Login failed",
             error: error.message
         })
     }
