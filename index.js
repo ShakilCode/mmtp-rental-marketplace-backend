@@ -5,7 +5,8 @@ import dotenv from 'dotenv'
 // Import the mongoose to connect backend to the MongoDB
 import mongoose from 'mongoose'
 import userRouter from './router/userRouter.js';
-import authorizeUser from './lib/jwtMiddleware.js';
+import authorizeUser from './middleware/jwtMiddleware.js';
+import productRouter from './router/productRouter.js';
 
 // reads .env file and loads values into process.env
 dotenv.config()
@@ -35,6 +36,9 @@ app.use(authorizeUser)
 
 // Connect the user router
 app.use("/api/users", userRouter)
+
+// Connect the product router
+app.use("/api/products", productRouter)
 
 // Start the server and make it listed for incoming requests on a specified port
 app.listen(process.env.PORT,
