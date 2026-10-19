@@ -3,7 +3,6 @@ import dotenv from "dotenv"
 import User from '../models/userModel.js'
 // JWT (JSON Web Token) is used for login authentication
 import jwt from 'jsonwebtoken'
-import { validatePassword } from '../utils/validatePassword.js'
 
 dotenv.config()
 
@@ -13,189 +12,166 @@ const pepper = process.env.PEPPER
 export async function registerUser(req, res) {
     try {
         // Get data from request body
-        let {
-            email,
-            firstName,
-            lastName,
-            password,
-            confirmPassword,
-            phone
-        } = req.body;
+        let { email, firstName, lastName, password, confirmPassword, phone, role } = req.body
 
         // Trim + normalize inputs
-        email = email?.trim().toLowerCase();
-        firstName = firstName?.trim();
-        lastName = lastName?.trim();
-        phone = phone?.trim();
+        email = email?.trim().toLowerCase()
+        firstName = firstName?.trim()
+        lastName = lastName?.trim()
+        phone = phone?.trim()
 
-        // 1. Check required fields
-        if (
-            !email ||
-            !firstName ||
-            !lastName ||
-            !password ||
-            !confirmPassword
-        ) {
+        // Allowed roles (NO ADMIN from frontend)
+        const allowedRoles = ["renter", "lender"]
+
+        // Force safe role
+        if (!allowedRoles.includes(role)) {
+            role = "renter"
+        }
+
+        // 1️ Check required fields
+        if (!email || !firstName || !lastName || !password || !confirmPassword || !phone) {
             return res.status(400).json({
                 message: "All fields are required"
-            });
+            })
         }
 
-        // 2. Email format validation
-        const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/i;
-
-        if (!emailRegex.test(email)) {
-            return res.status(400).json({
-                message: "Please enter a valid Gmail address ending in @gmail.com."
-            });
-        }
-
+        // 2️ Email format validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
         if (!emailRegex.test(email)) {
             return res.status(400).json({
                 message: "Invalid email format"
-            });
+            })
         }
 
-        // 3. Password match check
+        // 3️ Password match check
         if (password !== confirmPassword) {
             return res.status(400).json({
                 message: "Passwords do not match"
-            });
+            })
         }
 
-        // 4. Strong password validation
-        const passwordErrors = validatePassword(password);
-
-        if (passwordErrors.length > 0) {
+        // 4️ Strong password rule (letters + numbers, min 6 chars)
+        const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{6,}$/
+        if (!passwordRegex.test(password)) {
             return res.status(400).json({
-                message: `Password must contain ${passwordErrors.join(", ")}.`
-            });
+                message: "Password must be at least 6 characters and contain letters and numbers"
+            })
         }
 
-        // 5. Phone validation
+        // 5️ Phone validation
         if (!/^\d{10,15}$/.test(phone)) {
             return res.status(400).json({
                 message: "Invalid phone number"
-            });
+            })
         }
 
-        // 6. Check if user already exists
-        const existingUser = await User.findOne({ email });
+        // 6️ Check if user already exists
+        const existingUser = await User.findOne({ email })
 
         if (existingUser) {
-            return res.status(409).json({
+            return res.status(400).json({
                 message: "User already exists"
-            });
+            })
         }
 
-        // 7. Hash password (bcrypt + pepper)
-        const hashedPassword = await bcrypt.hash(
-            password + pepper,
-            10
-        );
+        // 7️ Hash password (bcrypt + pepper)
+        const hashedPassword = await bcrypt.hash(password + pepper, 10)
 
-        // 8. Create new user
-        // Every new account starts as a renter.
+        // 8️ Create new user
         const user = new User({
             email,
             firstName,
             lastName,
             password: hashedPassword,
             phone,
-            roles: ["renter"]
-        });
+            role 
+        })
 
-        // 9. Save user to DB
-        await user.save();
+        // 9️ Save user to DB
+        await user.save()
 
-        // 10. Success response
+        // Success response
         return res.status(201).json({
             message: "User registered successfully",
             user: {
                 id: user._id,
                 email: user.email,
-                roles: user.roles
+                role: user.role
             }
-        });
+        })
 
     } catch (error) {
-        // Handle duplicate email registration
-        if (error.code === 11000) {
-            return res.status(409).json({
-                message: "User already exists"
-            });
-        }
-
-        console.error("Register error:", error);
-
+        // Server error handling
         return res.status(500).json({
-            message: "User registration failed"
-        });
+            message: "User registration failed",
+            error: error.message
+        })
     }
 }
 
 // Login User
 export async function loginUser(req, res) {
     try {
-        let { email, password, rememberme } = req.body;
+        let { email, password, rememberme } = req.body
 
-        // 1. Normalize inputs
-        email = email?.trim().toLowerCase();
+        // 1️ Normalize inputs
+        email = email?.trim().toLowerCase()
+        password = password?.trim()
 
-        // 2. Check required fields
+        // 2️ Check required fields
         if (!email || !password) {
             return res.status(400).json({
                 message: "Email and password are required"
-            });
+            })
         }
 
-        // 3. Email format validation (Gmail only)
-        const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/i;
-
+        // 3️ Email format validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
         if (!emailRegex.test(email)) {
             return res.status(400).json({
-                message: "Please enter a valid Gmail address ending in @gmail.com."
-            });
+                message: "Invalid email format"
+            })
         }
 
-        // 4. Password length validation
-        if (typeof password !== "string" || password.length < 8) {
+        // 4️ Password basic check (min 6 chars)
+        if (password.length < 6) {
             return res.status(400).json({
-                message: "Password must be at least 8 characters"
-            });
+                message: "Password must be at least 6 characters"
+            })
         }
 
-        // 5. Find user by email
-        const user = await User.findOne({ email });
+        // 5️ Find user
+        const user = await User.findOne({ email })
 
         if (!user) {
             return res.status(401).json({
-                message: "Invalid email or password"
-            });
+                message: "User with given email not found"
+            })
         }
 
-        // 6. Check if user is blocked
+        // 6️ Check if user is blocked
         if (user.isBlocked) {
             return res.status(403).json({
                 message: "Your account is blocked. Please contact support for more information."
-            });
+            })
         }
 
-        // 7. Compare password (bcrypt + pepper)
+        // 7️ Compare password (WITH pepper ⚠️)
         const isPasswordValid = await bcrypt.compare(
             password + process.env.PEPPER,
             user.password
-        );
+        )
 
         if (!isPasswordValid) {
             return res.status(401).json({
-                message: "Invalid email or password"
-            });
+                message: "Invalid password"
+            })
         }
 
-        // 8. Generate JWT token
+        // 8️ Generate JWT token
         const token = jwt.sign(
             {
+                id: user._id,
                 email: user.email,
                 role: user.role
             },
@@ -203,31 +179,23 @@ export async function loginUser(req, res) {
             {
                 expiresIn: rememberme ? "30d" : "48h"
             }
-        );
+        )
 
-        // 9. Update last login time
-        user.lastLogin = new Date();
-        await user.save();
-
-        // 10. Return success response
+        // 9️ Success response
         return res.status(200).json({
             message: "Login successful",
             token,
             user: {
                 id: user._id,
                 email: user.email,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                role: user.role,
-                image: user.image
+                role: user.role
             }
-        });
+        })
 
     } catch (error) {
-        console.error("Login error:", error);
-
         return res.status(500).json({
-            message: "Login failed"
-        });
+            message: "Login failed",
+            error: error.message
+        })
     }
 }
