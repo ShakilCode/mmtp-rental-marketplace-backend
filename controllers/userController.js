@@ -13,86 +13,102 @@ const pepper = process.env.PEPPER
 export async function registerUser(req, res) {
     try {
         // Get data from request body
-        let { email, firstName, lastName, password, confirmPassword, phone, role } = req.body
- 
+        let {
+            email,
+            firstName,
+            lastName,
+            password,
+            confirmPassword,
+            phone
+        } = req.body;
+
         // Trim + normalize inputs
-        email = email?.trim().toLowerCase()
-        firstName = firstName?.trim()
-        lastName = lastName?.trim()
-        phone = phone?.trim()
- 
-        // Allowed roles (NO ADMIN from frontend)
-        const allowedRoles = ["renter", "lender"]
- 
-        // Force safe role
-        if (!allowedRoles.includes(role)) {
-            role = "renter"
-        }
- 
+        email = email?.trim().toLowerCase();
+        firstName = firstName?.trim();
+        lastName = lastName?.trim();
+        phone = phone?.trim();
+
         // 1. Check required fields
-        if (!email || !firstName || !lastName || !password || !confirmPassword || !phone) {
+        if (
+            !email ||
+            !firstName ||
+            !lastName ||
+            !password ||
+            !confirmPassword
+        ) {
             return res.status(400).json({
                 message: "All fields are required"
-            })
+            });
         }
- 
+
         // 2. Email format validation
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+        const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/i;
+
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({
+                message: "Please enter a valid Gmail address ending in @gmail.com."
+            });
+        }
+
         if (!emailRegex.test(email)) {
             return res.status(400).json({
                 message: "Invalid email format"
-            })
+            });
         }
- 
+
         // 3. Password match check
         if (password !== confirmPassword) {
             return res.status(400).json({
                 message: "Passwords do not match"
-            })
+            });
         }
- 
-        // 4. Strong password rule (uses the shared helper)
-        const passwordErrors = validatePassword(password)
+
+        // 4. Strong password validation
+        const passwordErrors = validatePassword(password);
+
         if (passwordErrors.length > 0) {
             return res.status(400).json({
                 message: `Password must contain ${passwordErrors.join(", ")}.`
-            })
+            });
         }
- 
+
         // 5. Phone validation
         if (!/^\d{10,15}$/.test(phone)) {
             return res.status(400).json({
                 message: "Invalid phone number"
-            })
+            });
         }
- 
+
         // 6. Check if user already exists
-        const existingUser = await User.findOne({ email })
- 
+        const existingUser = await User.findOne({ email });
+
         if (existingUser) {
             return res.status(409).json({
                 message: "User already exists"
-            })
+            });
         }
- 
+
         // 7. Hash password (bcrypt + pepper)
-        const hashedPassword = await bcrypt.hash(password + pepper, 10)
- 
+        const hashedPassword = await bcrypt.hash(
+            password + pepper,
+            10
+        );
+
         // 8. Create new user
-        // A lender can also rent, so lenders get both roles
+        // Every new account starts as a renter.
         const user = new User({
             email,
             firstName,
             lastName,
             password: hashedPassword,
             phone,
-            roles: role === "lender" ? ["renter", "lender"] : ["renter"]
-        })
- 
+            roles: ["renter"]
+        });
+
         // 9. Save user to DB
-        await user.save()
- 
-        // Success response
+        await user.save();
+
+        // 10. Success response
         return res.status(201).json({
             message: "User registered successfully",
             user: {
@@ -100,88 +116,86 @@ export async function registerUser(req, res) {
                 email: user.email,
                 roles: user.roles
             }
-        })
- 
+        });
+
     } catch (error) {
-        // Two requests with the same email at the same time
+        // Handle duplicate email registration
         if (error.code === 11000) {
             return res.status(409).json({
                 message: "User already exists"
-            })
+            });
         }
- 
-        console.error("Register error:", error)
- 
-        // Don't send error.message to the client
+
+        console.error("Register error:", error);
+
         return res.status(500).json({
             message: "User registration failed"
-        })
+        });
     }
 }
 
 // Login User
 export async function loginUser(req, res) {
     try {
-        let { email, password, rememberme } = req.body
+        let { email, password, rememberme } = req.body;
 
-        // 1️ Normalize inputs
-        email = email?.trim().toLowerCase()
-        password = password?.trim()
+        // 1. Normalize inputs
+        email = email?.trim().toLowerCase();
 
-        // 2️ Check required fields
+        // 2. Check required fields
         if (!email || !password) {
             return res.status(400).json({
                 message: "Email and password are required"
-            })
+            });
         }
 
-        // 3️ Email format validation
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+        // 3. Email format validation (Gmail only)
+        const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/i;
+
         if (!emailRegex.test(email)) {
             return res.status(400).json({
-                message: "Invalid email format"
-            })
+                message: "Please enter a valid Gmail address ending in @gmail.com."
+            });
         }
 
-        // 4️ Password basic check (min 6 chars)
-        if (password.length < 6) {
+        // 4. Password length validation
+        if (typeof password !== "string" || password.length < 8) {
             return res.status(400).json({
-                message: "Password must be at least 6 characters"
-            })
+                message: "Password must be at least 8 characters"
+            });
         }
 
-        // 5️ Find user
-        const user = await User.findOne({ email })
+        // 5. Find user by email
+        const user = await User.findOne({ email });
 
         if (!user) {
             return res.status(401).json({
-                message: "User with given email not found"
-            })
+                message: "Invalid email or password"
+            });
         }
 
-        // 6️ Check if user is blocked
+        // 6. Check if user is blocked
         if (user.isBlocked) {
             return res.status(403).json({
                 message: "Your account is blocked. Please contact support for more information."
-            })
+            });
         }
 
-        // 7️ Compare password (WITH pepper ⚠️)
+        // 7. Compare password (bcrypt + pepper)
         const isPasswordValid = await bcrypt.compare(
             password + process.env.PEPPER,
             user.password
-        )
+        );
 
         if (!isPasswordValid) {
             return res.status(401).json({
-                message: "Invalid password"
-            })
+                message: "Invalid email or password"
+            });
         }
 
-        // 8️ Generate JWT token
+        // 8. Generate JWT token
         const token = jwt.sign(
             {
-                id: user._id,
                 email: user.email,
                 role: user.role
             },
@@ -189,23 +203,31 @@ export async function loginUser(req, res) {
             {
                 expiresIn: rememberme ? "30d" : "48h"
             }
-        )
+        );
 
-        // 9️ Success response
+        // 9. Update last login time
+        user.lastLogin = new Date();
+        await user.save();
+
+        // 10. Return success response
         return res.status(200).json({
             message: "Login successful",
             token,
             user: {
                 id: user._id,
                 email: user.email,
-                role: user.role
+                firstName: user.firstName,
+                lastName: user.lastName,
+                role: user.role,
+                image: user.image
             }
-        })
+        });
 
     } catch (error) {
+        console.error("Login error:", error);
+
         return res.status(500).json({
-            message: "Login failed",
-            error: error.message
-        })
+            message: "Login failed"
+        });
     }
 }

@@ -33,6 +33,7 @@ const userSchema = new mongoose.Schema(
 
     phone: {
       type: String,
+      default: "",
       required: true,
     },
 
@@ -57,9 +58,14 @@ const userSchema = new mongoose.Schema(
       postalCode: { type: String, default: "" },
     },
 
-    isVerified: {
+    isEmailVerified: {
       type: Boolean,
       default: false,
+    },
+
+    isPhoneVerified: {
+    type: Boolean,
+    default: false,
     },
 
     verificationDocuments: {
