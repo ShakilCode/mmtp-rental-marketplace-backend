@@ -8,18 +8,21 @@ const productSchema = new mongoose.Schema(
     type: String,
     required: true,
     unique: true,
+    trim: true
     },
 
     // Title of the product
     title: {
       type: String,
-      required: true
+      required: true,
+      trim: true
     },
 
     // Description
     description: {
       type: String,
       required: true,
+      trim: true
     },
 
     // Alternative names (for search)
@@ -32,48 +35,65 @@ const productSchema = new mongoose.Schema(
     category: {
       type: String,
       default: "Others",
-      required: true
+      required: true,
+      trim: true
     },
 
     // Current rental price per day
     pricePerDay: {
       type: Number,
       required: true,
+      min: 0
     },
 
     // Optional hourly price
     pricePerHour: {
       type: Number,
       default: null,
+      min: 0
     },
 
     // Old price (for discount display)
     oldPrice: {
       type: Number,
       default: null,
+      min: 0
     },
 
     // Security deposit
     deposit: {
       type: Number,
       default: 0,
+      min: 0
     },
 
     // Availability period
     availability: {
       startDate: {
         type: Date,
+        default: null
       },
       endDate: {
         type: Date,
+        default: null
       },
     },
 
-    // Owner reference (Lender)
     owner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: true
+    },
+
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null
+    },
+
+    reviewedAt: {
+      type: Date,
+      default: null
     },
 
     // Location
@@ -95,12 +115,26 @@ const productSchema = new mongoose.Schema(
       default: true,
     },
 
+    // Admin approval
+    approvalStatus: {
+      type: String,
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
+      index: true
+    },
+
     // Condition of item
     condition: {
       type: String,
       enum: ["new", "like new", "good", "used"],
       default: "good",
     },
+
+    rejectionReason: {
+      type: String,
+      default: ""
+    },
+    
   },
   {
     timestamps: true,

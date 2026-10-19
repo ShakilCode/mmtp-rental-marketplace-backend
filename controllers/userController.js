@@ -196,6 +196,7 @@ export async function loginUser(req, res) {
         // 8. Generate JWT token
         const token = jwt.sign(
             {
+                id: user._id.toString(),
                 email: user.email,
                 role: user.role
             },
@@ -231,3 +232,4 @@ export async function loginUser(req, res) {
         });
     }
 }
+
