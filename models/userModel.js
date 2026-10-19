@@ -9,27 +9,31 @@ const userSchema = new mongoose.Schema(
       required: true,
       unique: true,
       lowercase: true,
-      index: true
+      index: true,
+      trim: true,
     },
 
     firstName : {
         type : String,
         required : true,
+        trim: true,
     },
 
     lastName : {
         type : String,
         required : true,
+        trim: true,
     },
 
     password: {
       type: String,
       required: true,
-      minlength: 6,
+      minlength: 8,
     },
 
     phone: {
       type: String,
+      default: "",
       required: true,
     },
 
@@ -54,9 +58,14 @@ const userSchema = new mongoose.Schema(
       postalCode: { type: String, default: "" },
     },
 
-    isVerified: {
+    isEmailVerified: {
       type: Boolean,
       default: false,
+    },
+
+    isPhoneVerified: {
+    type: Boolean,
+    default: false,
     },
 
     verificationDocuments: {
@@ -67,6 +76,8 @@ const userSchema = new mongoose.Schema(
     rating: {
       type: Number,
       default: 0,
+      min: 0,
+      max: 5,
     },
 
     totalReviews: {
@@ -79,9 +90,14 @@ const userSchema = new mongoose.Schema(
       default: 0,
     },
 
-    isActive: {
+    isBlocked: {
       type: Boolean,
-      default: true,
+      default: false,
+    },
+
+    reasonForBlocking: {
+      type: String,
+      default: "",
     },
 
     lastLogin: {
