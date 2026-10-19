@@ -3,6 +3,7 @@ import dotenv from "dotenv"
 import User from '../models/userModel.js'
 // JWT (JSON Web Token) is used for login authentication
 import jwt from 'jsonwebtoken'
+import { validatePassword } from '../utils/validatePassword.js'
 
 dotenv.config()
 
@@ -13,98 +14,107 @@ export async function registerUser(req, res) {
     try {
         // Get data from request body
         let { email, firstName, lastName, password, confirmPassword, phone, role } = req.body
-
+ 
         // Trim + normalize inputs
         email = email?.trim().toLowerCase()
         firstName = firstName?.trim()
         lastName = lastName?.trim()
         phone = phone?.trim()
-
+ 
         // Allowed roles (NO ADMIN from frontend)
         const allowedRoles = ["renter", "lender"]
-
+ 
         // Force safe role
         if (!allowedRoles.includes(role)) {
             role = "renter"
         }
-
-        // 1️ Check required fields
+ 
+        // 1. Check required fields
         if (!email || !firstName || !lastName || !password || !confirmPassword || !phone) {
             return res.status(400).json({
                 message: "All fields are required"
             })
         }
-
-        // 2️ Email format validation
+ 
+        // 2. Email format validation
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
         if (!emailRegex.test(email)) {
             return res.status(400).json({
                 message: "Invalid email format"
             })
         }
-
-        // 3️ Password match check
+ 
+        // 3. Password match check
         if (password !== confirmPassword) {
             return res.status(400).json({
                 message: "Passwords do not match"
             })
         }
-
-        // 4️ Strong password rule (letters + numbers, min 6 chars)
-        const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{6,}$/
-        if (!passwordRegex.test(password)) {
+ 
+        // 4. Strong password rule (uses the shared helper)
+        const passwordErrors = validatePassword(password)
+        if (passwordErrors.length > 0) {
             return res.status(400).json({
-                message: "Password must be at least 6 characters and contain letters and numbers"
+                message: `Password must contain ${passwordErrors.join(", ")}.`
             })
         }
-
-        // 5️ Phone validation
+ 
+        // 5. Phone validation
         if (!/^\d{10,15}$/.test(phone)) {
             return res.status(400).json({
                 message: "Invalid phone number"
             })
         }
-
-        // 6️ Check if user already exists
+ 
+        // 6. Check if user already exists
         const existingUser = await User.findOne({ email })
-
+ 
         if (existingUser) {
-            return res.status(400).json({
+            return res.status(409).json({
                 message: "User already exists"
             })
         }
-
-        // 7️ Hash password (bcrypt + pepper)
+ 
+        // 7. Hash password (bcrypt + pepper)
         const hashedPassword = await bcrypt.hash(password + pepper, 10)
-
-        // 8️ Create new user
+ 
+        // 8. Create new user
+        // A lender can also rent, so lenders get both roles
         const user = new User({
             email,
             firstName,
             lastName,
             password: hashedPassword,
             phone,
-            role 
+            roles: role === "lender" ? ["renter", "lender"] : ["renter"]
         })
-
-        // 9️ Save user to DB
+ 
+        // 9. Save user to DB
         await user.save()
-
+ 
         // Success response
         return res.status(201).json({
             message: "User registered successfully",
             user: {
                 id: user._id,
                 email: user.email,
-                role: user.role
+                roles: user.roles
             }
         })
-
+ 
     } catch (error) {
-        // Server error handling
+        // Two requests with the same email at the same time
+        if (error.code === 11000) {
+            return res.status(409).json({
+                message: "User already exists"
+            })
+        }
+ 
+        console.error("Register error:", error)
+ 
+        // Don't send error.message to the client
         return res.status(500).json({
-            message: "User registration failed",
-            error: error.message
+            message: "User registration failed"
         })
     }
 }
