@@ -115,6 +115,12 @@ const productSchema = new mongoose.Schema(
       default: true,
     },
 
+    // Proposed product changes waiting for admin approval
+    pendingChanges: {
+        type: mongoose.Schema.Types.Mixed,
+        default: null
+    },
+
     // Admin approval
     approvalStatus: {
       type: String,

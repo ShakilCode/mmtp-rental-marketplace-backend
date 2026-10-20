@@ -9,7 +9,8 @@ import {
     getMyProducts,
     getPublicProducts,
     getPendingProducts,
-    reviewProduct
+    reviewProduct,
+    updateProduct
 } from "../controllers/productController.js";
 
 const productRouter = express.Router();
@@ -42,6 +43,14 @@ productRouter.get(
     authorizeUser,
     authorizeRoles("admin"),
     getPendingProducts
+);
+
+// Lender: submit product updates for admin approval
+productRouter.patch(
+    "/:id/update",
+    authorizeUser,
+    authorizeRoles("lender"),
+    updateProduct
 );
 
 // Admin: approve or reject a product
