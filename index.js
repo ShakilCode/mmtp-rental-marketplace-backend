@@ -36,6 +36,12 @@ app.use(express.json())
 // Read trusted device cookies.
 app.use(cookieParser());
 
+// CORS configuration
+app.use(cors({
+    origin: process.env.CLIENT_URL,
+    credentials: true
+}));
+
 // middleware for check jwt token
 app.use(authorizeUser)
 
