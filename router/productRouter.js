@@ -1,4 +1,3 @@
-
 import express from "express";
 
 import authorizeUser from "../middleware/jwtMiddleware.js";
@@ -7,21 +6,42 @@ import { authorizerole } from "../middleware/authorizeRoleMiddleware.js";
 import {
     addProduct,
     getMyProducts,
+    getMyProductById,
     getPublicProducts,
+    getPublicProductById,
     getPendingProducts,
+    getAdminProducts,
+    getAdminProductById,
     reviewProduct,
-    updateProduct
+    updateProduct,
+    adminUpdateProduct,
+    adminUpdateProductStatus,
+    deleteMyProduct,
+    adminDeleteProduct,
+    adminRestoreProduct,
 } from "../controllers/productController.js";
 
 const productRouter = express.Router();
 
-// Public: renters can view approved products
+
+// Public routes (no authentication required)
+
+// View approved products
 productRouter.get(
     "/public",
     getPublicProducts
 );
 
-// Lender: submit a new product
+// View one approved product
+productRouter.get(
+    "/public/:id",
+    getPublicProductById
+);
+
+
+// Lender routes (authentication and role required)
+
+// Submit a product
 productRouter.post(
     "/add",
     authorizeUser,
@@ -29,7 +49,7 @@ productRouter.post(
     addProduct
 );
 
-// Lender: view their own submitted products
+// View own products
 productRouter.get(
     "/my",
     authorizeUser,
@@ -37,15 +57,15 @@ productRouter.get(
     getMyProducts
 );
 
-// Admin: view products awaiting approval
+// View one of own products
 productRouter.get(
-    "/admin/pending",
+    "/my/:id",
     authorizeUser,
-    authorizerole("admin"),
-    getPendingProducts
+    authorizerole("lender"),
+    getMyProductById
 );
 
-// Lender: submit product updates for admin approval
+// Update product and submit changes for admin review
 productRouter.patch(
     "/:id/update",
     authorizeUser,
@@ -53,12 +73,79 @@ productRouter.patch(
     updateProduct
 );
 
-// Admin: approve or reject a product
+// Withdraw own product
+productRouter.delete(
+    "/:id",
+    authorizeUser,
+    authorizerole("lender"),
+    deleteMyProduct
+);
+
+
+// Admin routes (authentication and role required)
+
+// View products waiting for review
+productRouter.get(
+    "/admin/pending",
+    authorizeUser,
+    authorizerole("admin"),
+    getPendingProducts
+);
+
+// View and search all products
+productRouter.get(
+    "/admin/all",
+    authorizeUser,
+    authorizerole("admin"),
+    getAdminProducts
+);
+
+// View complete product details
+productRouter.get(
+    "/admin/:id",
+    authorizeUser,
+    authorizerole("admin"),
+    getAdminProductById
+);
+
+// Approve or reject products and proposed updates
 productRouter.patch(
     "/admin/:id/review",
     authorizeUser,
     authorizerole("admin"),
     reviewProduct
+);
+
+// Admin directly updates a product
+productRouter.patch(
+    "/admin/:id/update",
+    authorizeUser,
+    authorizerole("admin"),
+    adminUpdateProduct
+);
+
+// Admin changes product status
+productRouter.patch(
+    "/admin/:id/status",
+    authorizeUser,
+    authorizerole("admin"),
+    adminUpdateProductStatus
+);
+
+// Admin deletes a product
+productRouter.delete(
+    "/admin/:id",
+    authorizeUser,
+    authorizerole("admin"),
+    adminDeleteProduct
+);
+
+// Admin restores a deleted product
+productRouter.patch(
+    "/admin/:id/restore",
+    authorizeUser,
+    authorizerole("admin"),
+    adminRestoreProduct
 );
 
 export default productRouter;

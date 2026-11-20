@@ -1,385 +1,1093 @@
 import mongoose from "mongoose";
+import { randomBytes } from "crypto";
+
 import Product from "../models/product.js";
+import User from "../models/userModel.js";
 
-// Create Product (Lender only)
-export async function addProduct(req, res) {
-    try {
-        const user = req.user;
+// Valid product conditions
+const VALID_CONDITIONS = [
+    "new",
+    "like new",
+    "good",
+    "used",
+];
 
-        if (!user) {
-            return res.status(401).json({
-                message: "Unauthorized - No user found"
-            });
+// Valid product statuses
+const VALID_STATUSES = [
+    "approved",
+    "rejected",
+    "suspended",
+];
+
+// Fields lenders are allowed to edit
+const EDITABLE_FIELDS = [
+    "title",
+    "description",
+    "altNames",
+    "category",
+    "pricePerDay",
+    "pricePerHour",
+    "oldPrice",
+    "deposit",
+    "availability",
+    "location",
+    "images",
+    "isAvailable",
+    "condition",
+];
+
+// Get authenticated user ID
+function getUserId(user) {
+    return user?.id || user?._id;
+}
+
+// Escape special characters in search
+function escapeRegex(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Generate unique product ID
+async function generateProductId() {
+    let productId;
+
+    do {
+        productId = `MMTP-${randomBytes(4)
+            .toString("hex")
+            .toUpperCase()}`;
+
+    } while (
+        await Product.exists({ productId })
+    );
+
+    return productId;
+}
+
+// Add moderation history
+function addHistory(
+    product,
+    action,
+    actor,
+    note = "",
+    fromStatus = null,
+    toStatus = null
+) {
+    product.moderationHistory.push({
+        action,
+        actor,
+        note,
+        fromStatus,
+        toStatus,
+        at: new Date(),
+    });
+}
+
+// Validate dates
+function validateDate(value, fieldName) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return {
+            value: null,
+        };
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return {
+            error: `${fieldName} is invalid`,
+        };
+    }
+
+    return {
+        value: date,
+    };
+}
+
+// Validate and sanitize product data
+function validateProductData(body, partial = false) {
+    const data = {};
+    const errors = [];
+
+    // Required fields for new products
+    if (!partial) {
+        for (const field of [
+            "title",
+            "description",
+            "category",
+            "pricePerDay",
+        ]) {
+            if (
+                body[field] === undefined ||
+                body[field] === null ||
+                body[field] === ""
+            ) {
+                errors.push(`${field} is required`);
+            }
         }
 
-        const {
-            productId,
-            title,
-            description,
-            category,
-            pricePerDay,
-            location
-        } = req.body;
+        if (!body.location?.city) {
+            errors.push("location.city is required");
+        }
+    }
 
-        // 1. Validate required fields
-        const missingFields = [];
-
-        if (!productId?.trim()) missingFields.push("productId");
-        if (!title?.trim()) missingFields.push("title");
-        if (!description?.trim()) missingFields.push("description");
-        if (!category?.trim()) missingFields.push("category");
+    // Validate text fields
+    for (const field of [
+        "title",
+        "description",
+        "category",
+    ]) {
+        if (!(field in body)) continue;
 
         if (
-            pricePerDay === undefined ||
-            pricePerDay === null ||
-            pricePerDay === ""
+            typeof body[field] !== "string" ||
+            !body[field].trim()
         ) {
-            missingFields.push("pricePerDay");
+            errors.push(
+                `${field} must be a valid string`
+            );
+            continue;
         }
 
-        if (!location?.city?.trim()) {
-            missingFields.push("location.city");
+        data[field] = body[field].trim();
+    }
+
+    // Validate text length
+    if (data.title && data.title.length > 150) {
+        errors.push(
+            "Title cannot exceed 150 characters"
+        );
+    }
+
+    if (
+        data.description &&
+        data.description.length > 5000
+    ) {
+        errors.push(
+            "Description cannot exceed 5000 characters"
+        );
+    }
+
+    if (
+        data.category &&
+        data.category.length > 100
+    ) {
+        errors.push(
+            "Category cannot exceed 100 characters"
+        );
+    }
+
+    // Validate prices
+    for (const field of [
+        "pricePerDay",
+        "pricePerHour",
+        "oldPrice",
+        "deposit",
+    ]) {
+        if (!(field in body)) continue;
+
+        const value = body[field];
+
+        // Optional prices can be null
+        if (
+            value === null &&
+            ["pricePerHour", "oldPrice"].includes(field)
+        ) {
+            data[field] = null;
+            continue;
         }
 
-        if (missingFields.length > 0) {
-            return res.status(400).json({
-                message: "Missing required fields",
-                missing: missingFields
-            });
+        if (
+            value === "" ||
+            value === undefined ||
+            !Number.isFinite(Number(value)) ||
+            Number(value) < 0
+        ) {
+            errors.push(
+                `${field} must be a valid non-negative number`
+            );
+            continue;
         }
 
-        // 2. Validate price
-        const dailyPrice = Number(pricePerDay);
+        data[field] = Number(value);
+    }
 
-        if (!Number.isFinite(dailyPrice) || dailyPrice <= 0) {
-            return res.status(400).json({
-                message: "Price per day must be a number greater than zero"
-            });
+    // Daily rental price must be greater than zero
+    if (
+        "pricePerDay" in data &&
+        data.pricePerDay <= 0
+    ) {
+        errors.push(
+            "pricePerDay must be greater than zero"
+        );
+    }
+
+    // Validate alternative names
+    if ("altNames" in body) {
+        if (
+            !Array.isArray(body.altNames) ||
+            !body.altNames.every(
+                name => typeof name === "string"
+            )
+        ) {
+            errors.push(
+                "altNames must be an array of strings"
+            );
+        } else {
+            data.altNames = body.altNames
+                .map(name => name.trim())
+                .filter(Boolean)
+                .slice(0, 20);
         }
+    }
 
-        // 3. Check duplicate product ID
-        const normalizedProductId = productId.trim();
-
-        const existingProduct = await Product.findOne({
-            productId: normalizedProductId
-        });
-
-        if (existingProduct) {
-            return res.status(409).json({
-                message: "Product with this productId already exists"
-            });
+    // Validate images
+    if ("images" in body) {
+        if (
+            !Array.isArray(body.images) ||
+            !body.images.every(
+                image =>
+                    typeof image === "string" &&
+                    image.trim().length > 0 &&
+                    (
+                        image.trim().startsWith("/images/") ||
+                        image.trim().startsWith("https://")
+                    )
+            )
+        ) {
+            errors.push(
+                "Images must contain valid HTTPS URLs or local image paths"
+            );
+        } else {
+            data.images = body.images
+                .map(image => image.trim())
+                .slice(0, 10);
         }
+    }
 
-        // 4. Validate optional prices
-        const parseOptionalPrice = (value, fieldName) => {
-            if (value === undefined || value === null || value === "") {
-                return { value: null };
+    // Validate availability dates
+    if ("availability" in body) {
+        const availability = body.availability;
+
+        if (
+            !availability ||
+            typeof availability !== "object" ||
+            Array.isArray(availability)
+        ) {
+            errors.push(
+                "Invalid availability object"
+            );
+        } else {
+            const start = validateDate(
+                availability.startDate,
+                "Availability start date"
+            );
+
+            const end = validateDate(
+                availability.endDate,
+                "Availability end date"
+            );
+
+            if (start.error) errors.push(start.error);
+            if (end.error) errors.push(end.error);
+
+            if (
+                start.value &&
+                end.value &&
+                start.value > end.value
+            ) {
+                errors.push(
+                    "Availability end date must be after start date"
+                );
             }
 
-            const number = Number(value);
-
-            if (!Number.isFinite(number) || number < 0) {
-                return {
-                    error: `${fieldName} must be a non-negative number`
+            if (!start.error && !end.error) {
+                data.availability = {
+                    startDate: start.value,
+                    endDate: end.value,
                 };
             }
-
-            return { value: number };
-        };
-
-        const hourlyPrice = parseOptionalPrice(
-            req.body.pricePerHour,
-            "pricePerHour"
-        );
-
-        const previousPrice = parseOptionalPrice(
-            req.body.oldPrice,
-            "oldPrice"
-        );
-
-        const deposit = parseOptionalPrice(
-            req.body.deposit,
-            "deposit"
-        );
-
-        for (const result of [hourlyPrice, previousPrice, deposit]) {
-            if (result.error) {
-                return res.status(400).json({
-                    message: result.error
-                });
-            }
         }
+    }
 
-        // 5. Validate availability dates
-        const startDate = req.body.availability?.startDate || null;
-        const endDate = req.body.availability?.endDate || null;
+    // Validate location
+    if ("location" in body) {
+        const location = body.location;
 
         if (
-            startDate &&
-            Number.isNaN(Date.parse(startDate))
+            !location ||
+            typeof location !== "object" ||
+            Array.isArray(location) ||
+            typeof location.city !== "string" ||
+            !location.city.trim()
         ) {
-            return res.status(400).json({
-                message: "Invalid availability start date"
+            errors.push(
+                "A valid location.city is required"
+            );
+        } else {
+            data.location = {
+                city: location.city.trim(),
+
+                district:
+                    typeof location.district === "string"
+                        ? location.district.trim()
+                        : "",
+
+                country:
+                    typeof location.country === "string" &&
+                    location.country.trim()
+                        ? location.country.trim()
+                        : "Sri Lanka",
+            };
+        }
+    }
+
+    // Validate availability
+    if ("isAvailable" in body) {
+        if (
+            typeof body.isAvailable !== "boolean"
+        ) {
+            errors.push(
+                "isAvailable must be a boolean"
+            );
+        } else {
+            data.isAvailable = body.isAvailable;
+        }
+    }
+
+    // Validate condition
+    if ("condition" in body) {
+        if (
+            !VALID_CONDITIONS.includes(body.condition)
+        ) {
+            errors.push(
+                "Invalid product condition"
+            );
+        } else {
+            data.condition = body.condition;
+        }
+    }
+
+    // Reject unexpected fields
+    for (const field of Object.keys(body)) {
+        if (!EDITABLE_FIELDS.includes(field)) {
+            errors.push(
+                `Field '${field}' is not allowed`
+            );
+        }
+    }
+
+    return {
+        data,
+        errors,
+    };
+}
+
+
+
+// LENDER: CREATE PRODUCT
+export async function addProduct(req, res) {
+    try {
+        const ownerId = getUserId(req.user);
+
+        if (!ownerId) {
+            return res.status(401).json({
+                message: "Authentication required",
             });
         }
 
-        if (
-            endDate &&
-            Number.isNaN(Date.parse(endDate))
-        ) {
+        // Validate product information
+        const { data, errors } = validateProductData(
+            req.body,
+            false
+        );
+
+        if (errors.length > 0) {
             return res.status(400).json({
-                message: "Invalid availability end date"
+                message: "Product validation failed",
+                errors,
             });
         }
 
-        if (
-            startDate &&
-            endDate &&
-            new Date(startDate) > new Date(endDate)
-        ) {
-            return res.status(400).json({
-                message: "End date must be after start date"
+        // Confirm that the logged-in user is a lender
+        const lender = await User.findById(ownerId)
+            .select("role isBlocked");
+
+        if (!lender) {
+            return res.status(401).json({
+                message: "User account not found",
             });
         }
 
-        // 6. Build trusted product data
-        // Never accept owner or approvalStatus from the request body.
-        const productData = {
-            productId: normalizedProductId,
-            title: title.trim(),
-            description: description.trim(),
-            category: category.trim(),
-            pricePerDay: dailyPrice,
-            pricePerHour: hourlyPrice.value,
-            oldPrice: previousPrice.value,
-            deposit: deposit.value ?? 0,
+        if (lender.isBlocked) {
+            return res.status(403).json({
+                message: "Your account is blocked",
+            });
+        }
 
-            altNames: Array.isArray(req.body.altNames)
-                ? req.body.altNames
-                : [],
+        if (lender.role !== "lender") {
+            return res.status(403).json({
+                message: "Only lenders can submit products",
+            });
+        }
 
-            images: Array.isArray(req.body.images) &&
-                req.body.images.length > 0
-                ? req.body.images
-                : ["/images/default-product.png"],
+        // Generate a product ID on the backend
+        const productId = await generateProductId();
 
-            // A lender cannot change the approval status.
-            // Every new submission starts as pending.
+        // Create the product
+        const product = await Product.create({
+            ...data,
+
+            productId,
+
+            owner: ownerId,
+
             approvalStatus: "pending",
+
             reviewedBy: null,
             reviewedAt: null,
+
             rejectionReason: "",
 
+            pendingChanges: null,
+            pendingUpdateStatus: null,
+
+            pendingUpdateRejectionReason: "",
+            pendingUpdateReviewedBy: null,
+            pendingUpdateReviewedAt: null,
+
             isAvailable: true,
+            isDeleted: false,
 
-            condition: req.body.condition || "good",
+            images:
+                data.images?.length > 0
+                    ? data.images
+                    : ["/images/default-product.png"],
 
-            availability: {
-                startDate,
-                endDate
+            deposit: data.deposit ?? 0,
+
+            condition: data.condition || "good",
+
+            availability: data.availability || {
+                startDate: null,
+                endDate: null,
             },
 
-            owner: user.id || user._id,
+            location: data.location,
 
-            location: {
-                city: location.city.trim(),
-                district: location.district?.trim() || "",
-                country: location.country?.trim() || "Sri Lanka"
-            }
-        };
-
-        if (!productData.owner) {
-            return res.status(401).json({
-                message: "Unable to identify the logged-in user"
-            });
-        }
-
-        // 7. Save product for the lender
-        const newProduct = await Product.create(productData);
+            moderationHistory: [
+                {
+                    action: "product-submitted",
+                    actor: ownerId,
+                    note: "Initial product submission",
+                    fromStatus: null,
+                    toStatus: "pending",
+                    at: new Date(),
+                },
+            ],
+        });
 
         return res.status(201).json({
             message: "Product submitted successfully. Waiting for admin approval.",
-            product: newProduct
+            product,
         });
 
     } catch (error) {
-        // MongoDB unique index protection against duplicate IDs
+        console.error("Add product error:", error);
+
         if (error.code === 11000) {
             return res.status(409).json({
-                message: "Product with this productId already exists"
+                message: "Duplicate product reference",
             });
         }
 
-        console.error("Add product error:", error);
-
         return res.status(500).json({
-            message: "Error creating product"
+            message: "Error creating product",
         });
     }
 }
 
 
-// View products submitted by the logged-in lender
+
+// LENDER: VIEW OWN PRODUCTS
 export async function getMyProducts(req, res) {
     try {
-        const userId = req.user.id || req.user._id;
+        const ownerId = getUserId(req.user);
 
         const products = await Product.find({
-            owner: userId
-        }).sort({ createdAt: -1 });
+            owner: ownerId,
+            isDeleted: false,
+        })
+            .sort({ createdAt: -1 })
+            .lean();
 
         return res.status(200).json({
             count: products.length,
-            products
+            products,
         });
 
     } catch (error) {
         console.error("Get lender products error:", error);
 
         return res.status(500).json({
-            message: "Error retrieving your products"
+            message: "Error retrieving your products",
         });
     }
 }
 
 
-// View approved products for the renter marketplace
+
+// LENDER: VIEW ONE OF THEIR PRODUCTS
+export async function getMyProductById(req, res) {
+    try {
+        const { id } = req.params;
+        const ownerId = getUserId(req.user);
+
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({
+                message: "Invalid product ID",
+            });
+        }
+
+        const product = await Product.findOne({
+            _id: id,
+            owner: ownerId,
+            isDeleted: false,
+        });
+
+        if (!product) {
+            return res.status(404).json({
+                message: "Product not found",
+            });
+        }
+
+        return res.status(200).json({
+            product,
+        });
+
+    } catch (error) {
+        console.error("Get lender product error:", error);
+
+        return res.status(500).json({
+            message: "Error retrieving product",
+        });
+    }
+}
+
+
+
+// PUBLIC: VIEW APPROVED PRODUCTS
 export async function getPublicProducts(req, res) {
     try {
-        const products = await Product.find({
+        const {
+            search,
+            category,
+            city,
+            district,
+            minPrice,
+            maxPrice,
+            page = 1,
+            limit = 12,
+        } = req.query;
+
+        // Pagination
+        const currentPage = Math.max(
+            1,
+            Number.parseInt(page, 10) || 1
+        );
+
+        const pageSize = Math.min(
+            50,
+            Math.max(
+                1,
+                Number.parseInt(limit, 10) || 12
+            )
+        );
+
+        // Only approved products can appear publicly
+        const filter = {
             approvalStatus: "approved",
-            isAvailable: true
-        }).sort({ createdAt: -1 });
+            isAvailable: true,
+            isDeleted: false,
+        };
+
+        // Search products
+        if (
+            typeof search === "string" &&
+            search.trim()
+        ) {
+            const regex = new RegExp(
+                escapeRegex(search.trim()),
+                "i"
+            );
+
+            filter.$or = [
+                { title: regex },
+                { description: regex },
+                { altNames: regex },
+            ];
+        }
+
+        if (category) {
+            filter.category = category;
+        }
+
+        if (city) {
+            filter["location.city"] = new RegExp(
+                `^${escapeRegex(city)}$`,
+                "i"
+            );
+        }
+
+        if (district) {
+            filter["location.district"] = new RegExp(
+                `^${escapeRegex(district)}$`,
+                "i"
+            );
+        }
+
+        // Validate price filters
+        if (
+            minPrice !== undefined &&
+            (
+                !Number.isFinite(Number(minPrice)) ||
+                Number(minPrice) < 0
+            )
+        ) {
+            return res.status(400).json({
+                message: "Invalid minimum price",
+            });
+        }
+
+        if (
+            maxPrice !== undefined &&
+            (
+                !Number.isFinite(Number(maxPrice)) ||
+                Number(maxPrice) < 0
+            )
+        ) {
+            return res.status(400).json({
+                message: "Invalid maximum price",
+            });
+        }
+
+        // Apply price range
+        if (
+            minPrice !== undefined ||
+            maxPrice !== undefined
+        ) {
+            filter.pricePerDay = {};
+
+            if (minPrice !== undefined) {
+                filter.pricePerDay.$gte =
+                    Number(minPrice);
+            }
+
+            if (maxPrice !== undefined) {
+                filter.pricePerDay.$lte =
+                    Number(maxPrice);
+            }
+        }
+
+        const [products, total] = await Promise.all([
+            Product.find(filter)
+                .select(
+                    "-moderationHistory -pendingChanges -rejectionReason -reviewedBy"
+                )
+                .sort({ createdAt: -1 })
+                .skip((currentPage - 1) * pageSize)
+                .limit(pageSize)
+                .lean(),
+
+            Product.countDocuments(filter),
+        ]);
 
         return res.status(200).json({
             count: products.length,
-            products
+            total,
+            page: currentPage,
+            pages: Math.ceil(total / pageSize),
+            products,
         });
 
     } catch (error) {
         console.error("Get public products error:", error);
 
         return res.status(500).json({
-            message: "Error retrieving products"
+            message: "Error retrieving products",
         });
     }
 }
 
 
-// View pending products for admin review
+
+// PUBLIC: VIEW ONE APPROVED PRODUCT
+export async function getPublicProductById(req, res) {
+    try {
+        const { id } = req.params;
+
+        const conditions = [
+            {
+                productId: id,
+            },
+        ];
+
+        if (mongoose.isValidObjectId(id)) {
+            conditions.push({
+                _id: id,
+            });
+        }
+
+        const product = await Product.findOne({
+            $or: conditions,
+
+            approvalStatus: "approved",
+            isAvailable: true,
+            isDeleted: false,
+        })
+            .select(
+                "-moderationHistory -pendingChanges -rejectionReason -reviewedBy"
+            )
+            .lean();
+
+        if (!product) {
+            return res.status(404).json({
+                message: "Product not found",
+            });
+        }
+
+        return res.status(200).json({
+            product,
+        });
+
+    } catch (error) {
+        console.error("Get public product error:", error);
+
+        return res.status(500).json({
+            message: "Error retrieving product",
+        });
+    }
+}
+
+
+
+// ADMIN: VIEW PENDING PRODUCTS
 export async function getPendingProducts(req, res) {
     try {
         const products = await Product.find({
+            isDeleted: false,
+
             $or: [
-                { approvalStatus: "pending" },
-                { pendingChanges: { $ne: null } }
-            ]
+                {
+                    approvalStatus: "pending",
+                },
+                {
+                    pendingChanges: { $ne: null },
+                    pendingUpdateStatus: "pending",
+                },
+            ],
         })
-            .populate("owner", "firstName lastName email")
+            .populate(
+                "owner",
+                "firstName lastName email phone isPhoneVerified role"
+            )
             .sort({ createdAt: 1 });
 
         return res.status(200).json({
             count: products.length,
-            products
+            products,
         });
 
     } catch (error) {
         console.error("Get pending products error:", error);
 
         return res.status(500).json({
-            message: "Error retrieving pending products"
+            message: "Error retrieving pending products",
         });
     }
 }
 
 
-// Admin approves or rejects a product
+
+// ADMIN: VIEW AND SEARCH ALL PRODUCTS
+export async function getAdminProducts(req, res) {
+    try {
+        const {
+            search,
+            status,
+            category,
+            includeDeleted = "false",
+            page = 1,
+            limit = 20,
+        } = req.query;
+
+        const currentPage = Math.max(
+            1,
+            Number.parseInt(page, 10) || 1
+        );
+
+        const pageSize = Math.min(
+            100,
+            Math.max(
+                1,
+                Number.parseInt(limit, 10) || 20
+            )
+        );
+
+        const filter = {};
+
+        if (includeDeleted !== "true") {
+            filter.isDeleted = false;
+        }
+
+        if (status) {
+            if (
+                ![
+                    "pending",
+                    "approved",
+                    "rejected",
+                    "suspended",
+                ].includes(status)
+            ) {
+                return res.status(400).json({
+                    message: "Invalid product status",
+                });
+            }
+
+            filter.approvalStatus = status;
+        }
+
+        if (category) {
+            filter.category = category;
+        }
+
+        // Admin search
+        if (
+            typeof search === "string" &&
+            search.trim()
+        ) {
+            const regex = new RegExp(
+                escapeRegex(search.trim()),
+                "i"
+            );
+
+            filter.$or = [
+                { title: regex },
+                { productId: regex },
+                { category: regex },
+                { "location.city": regex },
+            ];
+        }
+
+        const [products, total] = await Promise.all([
+            Product.find(filter)
+                .populate(
+                    "owner",
+                    "firstName lastName email phone isPhoneVerified role isBlocked"
+                )
+                .populate(
+                    "reviewedBy",
+                    "firstName lastName email"
+                )
+                .sort({ createdAt: -1 })
+                .skip((currentPage - 1) * pageSize)
+                .limit(pageSize),
+
+            Product.countDocuments(filter),
+        ]);
+
+        return res.status(200).json({
+            count: products.length,
+            total,
+            page: currentPage,
+            pages: Math.ceil(total / pageSize),
+            products,
+        });
+
+    } catch (error) {
+        console.error("Get admin products error:", error);
+
+        return res.status(500).json({
+            message: "Error retrieving products",
+        });
+    }
+}
+
+
+
+// ADMIN: VIEW ONE PRODUCT
+export async function getAdminProductById(req, res) {
+    try {
+        const { id } = req.params;
+
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({
+                message: "Invalid product ID",
+            });
+        }
+
+        const product = await Product.findById(id)
+            .populate(
+                "owner",
+                "firstName lastName email phone isPhoneVerified role isBlocked"
+            )
+            .populate(
+                "reviewedBy",
+                "firstName lastName email"
+            )
+            .populate(
+                "pendingUpdateReviewedBy",
+                "firstName lastName email"
+            )
+            .populate(
+                "deletedBy",
+                "firstName lastName email"
+            );
+
+        if (!product) {
+            return res.status(404).json({
+                message: "Product not found",
+            });
+        }
+
+        return res.status(200).json({
+            product,
+        });
+
+    } catch (error) {
+        console.error("Get admin product error:", error);
+
+        return res.status(500).json({
+            message: "Error retrieving product",
+        });
+    }
+}
+
+
+
+// ADMIN: APPROVE OR REJECT PRODUCT / UPDATE
 export async function reviewProduct(req, res) {
     try {
         const { id } = req.params;
         const { status, rejectionReason } = req.body;
 
-        // 1. Validate the requested decision
-        if (!["approved", "rejected"].includes(status)) {
-            return res.status(400).json({
-                message: "Status must be approved or rejected"
-            });
-        }
+        const adminId = getUserId(req.user);
 
-        // 2. Validate product ID
         if (!mongoose.isValidObjectId(id)) {
             return res.status(400).json({
-                message: "Invalid product ID"
+                message: "Invalid product ID",
             });
         }
 
-        // 3. Find product
+        if (!["approved", "rejected"].includes(status)) {
+            return res.status(400).json({
+                message: "Status must be approved or rejected",
+            });
+        }
+
+        if (
+            status === "rejected" &&
+            (
+                typeof rejectionReason !== "string" ||
+                !rejectionReason.trim()
+            )
+        ) {
+            return res.status(400).json({
+                message: "A rejection reason is required",
+            });
+        }
+
         const product = await Product.findById(id);
 
-        if (!product) {
+        if (!product || product.isDeleted) {
             return res.status(404).json({
-                message: "Product not found"
+                message: "Product not found",
             });
         }
 
-        const adminId = req.user.id || req.user._id;
-
-        // 4. Handle an update to an already-approved product
-        if (product.pendingChanges !== null) {
+        // Review proposed changes
+        if (
+            product.pendingChanges !== null &&
+            product.pendingUpdateStatus === "pending"
+        ) {
             if (product.approvalStatus !== "approved") {
                 return res.status(409).json({
-                    message: "Product is not in a valid state for update review"
+                    message: "Invalid product update review state",
                 });
             }
 
             if (status === "approved") {
-                // Apply the proposed fields to the public product
-                const changes = product.pendingChanges.toObject
-                    ? product.pendingChanges.toObject()
-                    : product.pendingChanges;
+                const changes = product.pendingChanges;
 
+                // Apply approved changes
                 for (const [field, value] of Object.entries(changes)) {
-                    product.set(field, value);
+                    if (EDITABLE_FIELDS.includes(field)) {
+                        product.set(field, value);
+                    }
                 }
 
-                product.reviewedBy = adminId;
-                product.reviewedAt = new Date();
-                product.rejectionReason = "";
+                product.pendingUpdateStatus = "approved";
+                product.pendingUpdateRejectionReason = "";
+                product.pendingUpdateReviewedBy = adminId;
+                product.pendingUpdateReviewedAt = new Date();
+
                 product.pendingChanges = null;
+
+                addHistory(
+                    product,
+                    "product-update-approved",
+                    adminId,
+                    "Proposed changes approved",
+                    "approved",
+                    "approved"
+                );
 
                 await product.save();
 
                 return res.status(200).json({
-                    message: "Product update approved and applied successfully",
-                    product
+                    message: "Product update approved successfully",
+                    product,
                 });
             }
 
-            // Reject only the proposed changes.
-            // Keep the original approved product available.
+            // Reject proposed changes
+            product.pendingUpdateStatus = "rejected";
+
+            product.pendingUpdateRejectionReason =
+                rejectionReason.trim();
+
+            product.pendingUpdateReviewedBy = adminId;
+            product.pendingUpdateReviewedAt = new Date();
+
             product.pendingChanges = null;
-            product.reviewedBy = adminId;
-            product.reviewedAt = new Date();
-            product.rejectionReason =
-                typeof rejectionReason === "string" &&
-                rejectionReason.trim()
-                    ? rejectionReason.trim()
-                    : "Product update rejected without a reason";
+
+            addHistory(
+                product,
+                "product-update-rejected",
+                adminId,
+                rejectionReason.trim(),
+                "approved",
+                "approved"
+            );
 
             await product.save();
 
             return res.status(200).json({
-                message: "Product update rejected. The previously approved product remains unchanged.",
-                product
+                message: "Product update rejected. Original listing remains unchanged.",
+                product,
             });
         }
 
-        // 5. Handle a new product awaiting its first review
+        // Review new product
         if (product.approvalStatus !== "pending") {
             return res.status(409).json({
-                message: "Product is not awaiting initial approval"
+                message: "Product is not awaiting initial approval",
             });
         }
+
+        const previousStatus = product.approvalStatus;
 
         product.approvalStatus = status;
         product.reviewedBy = adminId;
@@ -387,329 +1095,527 @@ export async function reviewProduct(req, res) {
 
         product.rejectionReason =
             status === "rejected"
-                ? (
-                    typeof rejectionReason === "string" &&
-                    rejectionReason.trim()
-                        ? rejectionReason.trim()
-                        : "No reason provided"
-                )
+                ? rejectionReason.trim()
                 : "";
+
+        // Approved product becomes available
+        if (status === "approved") {
+            product.isAvailable = true;
+        }
+
+        // Rejected product is hidden
+        if (status === "rejected") {
+            product.isAvailable = false;
+        }
+
+        addHistory(
+            product,
+            `product-${status}`,
+            adminId,
+            rejectionReason?.trim() || "",
+            previousStatus,
+            status
+        );
 
         await product.save();
 
         return res.status(200).json({
             message: `Product ${status} successfully`,
-            product
+            product,
         });
 
     } catch (error) {
         console.error("Review product error:", error);
 
         return res.status(500).json({
-            message: "Failed to review product"
+            message: "Failed to review product",
         });
     }
 }
 
 
-// Update Product (Lender only)
-// Stores proposed changes until admin approval
+
+// LENDER: UPDATE PRODUCT
 export async function updateProduct(req, res) {
     try {
         const { id } = req.params;
-        const userId = req.user.id || req.user._id;
+        const ownerId = getUserId(req.user);
 
-        // 1. Validate product ID
         if (!mongoose.isValidObjectId(id)) {
             return res.status(400).json({
-                message: "Invalid product ID"
+                message: "Invalid product ID",
             });
         }
 
-        // 2. Find product owned by the logged-in lender
         const product = await Product.findOne({
             _id: id,
-            owner: userId
+            owner: ownerId,
+            isDeleted: false,
         });
 
         if (!product) {
             return res.status(404).json({
-                message: "Product not found or you do not own this product"
+                message: "Product not found or not owned by you",
             });
         }
 
-        // 3. Only approved products can be updated
-        if (product.approvalStatus !== "approved") {
-            return res.status(400).json({
-                message: "Only approved products can be updated"
-            });
-        }
-
-        // 4. Prevent multiple submissions while changes are pending
-        if (product.pendingChanges !== null) {
+        // Cannot edit while initial approval is pending
+        if (product.approvalStatus === "pending") {
             return res.status(409).json({
-                message: "Your previous product update is awaiting admin review"
+                message: "Your product is awaiting initial approval",
             });
         }
 
-        // 5. Only allow editable fields
-        // productId, owner, approvalStatus, reviewedBy and
-        // reviewedAt cannot be changed by the lender.
-        const allowedFields = [
-            "title",
-            "description",
-            "altNames",
-            "category",
-            "pricePerDay",
-            "pricePerHour",
-            "oldPrice",
-            "deposit",
-            "availability",
-            "location",
-            "images",
-            "isAvailable",
-            "condition"
-        ];
-
-        const updates = {};
-
-        for (const field of allowedFields) {
-            if (Object.prototype.hasOwnProperty.call(req.body, field)) {
-                updates[field] = req.body[field];
-            }
-        }
-
-        if (Object.keys(updates).length === 0) {
-            return res.status(400).json({
-                message: "No valid product fields provided for update"
-            });
-        }
-
-        // 6. Validate text fields
-        for (const field of ["title", "description", "category"]) {
-            if (field in updates) {
-                if (
-                    typeof updates[field] !== "string" ||
-                    !updates[field].trim()
-                ) {
-                    return res.status(400).json({
-                        message: `${field} must be a non-empty string`
-                    });
-                }
-
-                updates[field] = updates[field].trim();
-            }
-        }
-
-        // 7. Validate prices
-        for (const field of [
-            "pricePerDay",
-            "pricePerHour",
-            "oldPrice",
-            "deposit"
-        ]) {
-            if (!(field in updates)) continue;
-
-            const value = updates[field];
-
-            if (
-                value === null &&
-                ["pricePerHour", "oldPrice"].includes(field)
-            ) {
-                continue;
-            }
-
-            if (
-                value === "" ||
-                value === null ||
-                value === undefined ||
-                !Number.isFinite(Number(value)) ||
-                Number(value) < 0
-            ) {
-                return res.status(400).json({
-                    message: `${field} must be a non-negative number`
-                });
-            }
-
-            updates[field] = Number(value);
-        }
-
+        // Prevent duplicate pending updates
         if (
-            "pricePerDay" in updates &&
-            updates.pricePerDay <= 0
+            product.pendingUpdateStatus === "pending" &&
+            product.pendingChanges !== null
         ) {
-            return res.status(400).json({
-                message: "Price per day must be greater than zero"
+            return res.status(409).json({
+                message: "Your previous product update is awaiting admin review",
             });
         }
 
-        // 8. Validate alternative names
-        if ("altNames" in updates) {
-            if (
-                !Array.isArray(updates.altNames) ||
-                !updates.altNames.every(
-                    name => typeof name === "string"
-                )
-            ) {
-                return res.status(400).json({
-                    message: "altNames must be an array of strings"
-                });
-            }
+        const { data, errors } = validateProductData(
+            req.body,
+            true
+        );
 
-            updates.altNames = updates.altNames
-                .map(name => name.trim())
-                .filter(Boolean);
-        }
-
-        // 9. Validate images
-        if ("images" in updates) {
-            if (
-                !Array.isArray(updates.images) ||
-                !updates.images.every(
-                    image => typeof image === "string" && image.trim()
-                )
-            ) {
-                return res.status(400).json({
-                    message: "images must be an array of non-empty strings"
-                });
-            }
-
-            updates.images = updates.images.map(image => image.trim());
-        }
-
-        // 10. Validate availability dates
-        if ("availability" in updates) {
-            const availability = updates.availability;
-
-            if (
-                !availability ||
-                typeof availability !== "object" ||
-                Array.isArray(availability)
-            ) {
-                return res.status(400).json({
-                    message: "Invalid availability object"
-                });
-            }
-
-            const startDate = availability.startDate || null;
-            const endDate = availability.endDate || null;
-
-            for (const [field, value] of [
-                ["startDate", startDate],
-                ["endDate", endDate]
-            ]) {
-                if (
-                    value !== null &&
-                    (
-                        typeof value !== "string" &&
-                        !(value instanceof Date)
-                    )
-                ) {
-                    return res.status(400).json({
-                        message: `Invalid availability ${field}`
-                    });
-                }
-
-                if (
-                    value !== null &&
-                    Number.isNaN(Date.parse(value))
-                ) {
-                    return res.status(400).json({
-                        message: `Invalid availability ${field}`
-                    });
-                }
-            }
-
-            if (
-                startDate &&
-                endDate &&
-                new Date(startDate) > new Date(endDate)
-            ) {
-                return res.status(400).json({
-                    message: "End date must be after start date"
-                });
-            }
-
-            updates.availability = {
-                startDate,
-                endDate
-            };
-        }
-
-        // 11. Validate location
-        if ("location" in updates) {
-            const location = updates.location;
-
-            if (
-                !location ||
-                typeof location !== "object" ||
-                Array.isArray(location) ||
-                typeof location.city !== "string" ||
-                !location.city.trim()
-            ) {
-                return res.status(400).json({
-                    message: "A valid location.city is required"
-                });
-            }
-
-            for (const field of ["district", "country"]) {
-                if (
-                    location[field] !== undefined &&
-                    typeof location[field] !== "string"
-                ) {
-                    return res.status(400).json({
-                        message: `location.${field} must be a string`
-                    });
-                }
-            }
-
-            updates.location = {
-                city: location.city.trim(),
-                district: location.district?.trim() || "",
-                country: location.country?.trim() || "Sri Lanka"
-            };
-        }
-
-        // 12. Validate availability toggle
-        if (
-            "isAvailable" in updates &&
-            typeof updates.isAvailable !== "boolean"
-        ) {
+        if (errors.length > 0) {
             return res.status(400).json({
-                message: "isAvailable must be a boolean"
+                message: "Product update validation failed",
+                errors,
             });
         }
 
-        // 13. Validate condition
-        if ("condition" in updates) {
-            const validConditions = [
-                "new",
-                "like new",
-                "good",
-                "used"
-            ];
-
-            if (!validConditions.includes(updates.condition)) {
-                return res.status(400).json({
-                    message: "Invalid product condition"
-                });
-            }
+        if (Object.keys(data).length === 0) {
+            return res.status(400).json({
+                message: "No valid product fields provided",
+            });
         }
 
-        // 14. Store the proposed version, not the public version
-        product.pendingChanges = updates;
-        await product.save();
+        // Resubmit rejected products for approval
+        if (product.approvalStatus === "rejected") {
+            const previousStatus = product.approvalStatus;
 
-        return res.status(200).json({
-            message: "Product update submitted successfully. Waiting for admin approval.",
-            product
+            for (const [field, value] of Object.entries(data)) {
+                product.set(field, value);
+            }
+
+            product.approvalStatus = "pending";
+            product.isAvailable = false;
+
+            product.reviewedBy = null;
+            product.reviewedAt = null;
+
+            product.rejectionReason = "";
+
+            product.pendingChanges = null;
+            product.pendingUpdateStatus = null;
+            product.pendingUpdateRejectionReason = "";
+            product.pendingUpdateReviewedBy = null;
+            product.pendingUpdateReviewedAt = null;
+
+            addHistory(
+                product,
+                "product-resubmitted",
+                ownerId,
+                "Rejected product corrected and resubmitted",
+                previousStatus,
+                "pending"
+            );
+
+            await product.save();
+
+            return res.status(200).json({
+                message: "Product corrected and resubmitted for admin approval",
+                product,
+            });
+        }
+
+        // Suspended products cannot be edited by lenders
+        if (product.approvalStatus === "suspended") {
+            return res.status(403).json({
+                message: "This product is suspended. Contact the administrator.",
+            });
+        }
+
+        // Approved product updates require admin approval
+        if (product.approvalStatus === "approved") {
+            product.pendingChanges = data;
+            product.pendingUpdateStatus = "pending";
+
+            product.pendingUpdateRejectionReason = "";
+            product.pendingUpdateReviewedBy = null;
+            product.pendingUpdateReviewedAt = null;
+
+            addHistory(
+                product,
+                "product-update-submitted",
+                ownerId,
+                "Changes submitted for admin review",
+                "approved",
+                "update-pending"
+            );
+
+            await product.save();
+
+            return res.status(200).json({
+                message: "Product update submitted. Waiting for admin approval.",
+                product,
+            });
+        }
+
+        return res.status(400).json({
+            message: "This product cannot be updated",
         });
 
     } catch (error) {
         console.error("Update product error:", error);
 
         return res.status(500).json({
-            message: "Error submitting product update"
+            message: "Error submitting product update",
+        });
+    }
+}
+
+
+
+// ADMIN: DIRECTLY UPDATE ANY PRODUCT
+export async function adminUpdateProduct(req, res) {
+    try {
+        const { id } = req.params;
+        const adminId = getUserId(req.user);
+
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({
+                message: "Invalid product ID",
+            });
+        }
+
+        const product = await Product.findById(id);
+
+        if (!product || product.isDeleted) {
+            return res.status(404).json({
+                message: "Product not found",
+            });
+        }
+
+        const { data, errors } = validateProductData(
+            req.body,
+            true
+        );
+
+        if (errors.length > 0) {
+            return res.status(400).json({
+                message: "Product update validation failed",
+                errors,
+            });
+        }
+
+        if (Object.keys(data).length === 0) {
+            return res.status(400).json({
+                message: "No valid product fields provided",
+            });
+        }
+
+        // Apply admin changes immediately
+        for (const [field, value] of Object.entries(data)) {
+            product.set(field, value);
+        }
+
+        // Clear pending lender changes
+        product.pendingChanges = null;
+        product.pendingUpdateStatus = null;
+        product.pendingUpdateRejectionReason = "";
+        product.pendingUpdateReviewedBy = null;
+        product.pendingUpdateReviewedAt = null;
+
+        addHistory(
+            product,
+            "admin-product-updated",
+            adminId,
+            "Product updated directly by administrator",
+            product.approvalStatus,
+            product.approvalStatus
+        );
+
+        await product.save();
+
+        return res.status(200).json({
+            message: "Product updated successfully by admin",
+            product,
+        });
+
+    } catch (error) {
+        console.error("Admin update product error:", error);
+
+        return res.status(500).json({
+            message: "Error updating product",
+        });
+    }
+}
+
+
+
+// ADMIN: CHANGE PRODUCT STATUS
+export async function adminUpdateProductStatus(req, res) {
+    try {
+        const { id } = req.params;
+        const { status, reason } = req.body;
+
+        const adminId = getUserId(req.user);
+
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({
+                message: "Invalid product ID",
+            });
+        }
+
+        if (!VALID_STATUSES.includes(status)) {
+            return res.status(400).json({
+                message: "Invalid product status",
+            });
+        }
+
+        if (
+            ["rejected", "suspended"].includes(status) &&
+            (
+                typeof reason !== "string" ||
+                !reason.trim()
+            )
+        ) {
+            return res.status(400).json({
+                message: "A reason is required for this status",
+            });
+        }
+
+        const product = await Product.findById(id);
+
+        if (!product || product.isDeleted) {
+            return res.status(404).json({
+                message: "Product not found",
+            });
+        }
+
+        const previousStatus = product.approvalStatus;
+
+        product.approvalStatus = status;
+        product.reviewedBy = adminId;
+        product.reviewedAt = new Date();
+
+        product.rejectionReason =
+            status === "rejected"
+                ? reason.trim()
+                : "";
+
+        // Rejected and suspended products are hidden
+        if (
+            ["rejected", "suspended"].includes(status)
+        ) {
+            product.isAvailable = false;
+        }
+
+        // Approved products become available
+        if (status === "approved") {
+            product.isAvailable = true;
+        }
+
+        addHistory(
+            product,
+            `admin-status-${status}`,
+            adminId,
+            reason?.trim() || "",
+            previousStatus,
+            status
+        );
+
+        await product.save();
+
+        return res.status(200).json({
+            message: `Product status updated to ${status}`,
+            product,
+        });
+
+    } catch (error) {
+        console.error("Admin update product status error:", error);
+
+        return res.status(500).json({
+            message: "Error updating product status",
+        });
+    }
+}
+
+
+
+// LENDER: WITHDRAW OWN PRODUCT
+export async function deleteMyProduct(req, res) {
+    try {
+        const { id } = req.params;
+        const ownerId = getUserId(req.user);
+
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({
+                message: "Invalid product ID",
+            });
+        }
+
+        const product = await Product.findOne({
+            _id: id,
+            owner: ownerId,
+            isDeleted: false,
+        });
+
+        if (!product) {
+            return res.status(404).json({
+                message: "Product not found or not owned by you",
+            });
+        }
+
+        // Soft delete
+        product.isDeleted = true;
+        product.deletedAt = new Date();
+        product.deletedBy = ownerId;
+        product.deletionReason =
+            "Withdrawn by product owner";
+
+        product.isAvailable = false;
+
+        addHistory(
+            product,
+            "product-withdrawn",
+            ownerId,
+            "Product withdrawn by lender",
+            product.approvalStatus,
+            "deleted"
+        );
+
+        await product.save();
+
+        return res.status(200).json({
+            message: "Product withdrawn successfully",
+        });
+
+    } catch (error) {
+        console.error("Delete lender product error:", error);
+
+        return res.status(500).json({
+            message: "Error withdrawing product",
+        });
+    }
+}
+
+
+
+// ADMIN: DELETE PRODUCT
+export async function adminDeleteProduct(req, res) {
+    try {
+        const { id } = req.params;
+        const adminId = getUserId(req.user);
+
+        const { reason = "" } = req.body || {};
+
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({
+                message: "Invalid product ID",
+            });
+        }
+
+        const product = await Product.findById(id);
+
+        if (!product || product.isDeleted) {
+            return res.status(404).json({
+                message: "Product not found",
+            });
+        }
+
+        product.isDeleted = true;
+        product.deletedAt = new Date();
+        product.deletedBy = adminId;
+
+        product.deletionReason =
+            typeof reason === "string"
+                ? reason.trim()
+                : "";
+
+        product.isAvailable = false;
+
+        addHistory(
+            product,
+            "admin-product-deleted",
+            adminId,
+            product.deletionReason,
+            product.approvalStatus,
+            "deleted"
+        );
+
+        await product.save();
+
+        return res.status(200).json({
+            message: "Product removed successfully",
+        });
+
+    } catch (error) {
+        console.error("Admin delete product error:", error);
+
+        return res.status(500).json({
+            message: "Error deleting product",
+        });
+    }
+}
+
+
+
+// ADMIN: RESTORE DELETED PRODUCT
+export async function adminRestoreProduct(req, res) {
+    try {
+        const { id } = req.params;
+        const adminId = getUserId(req.user);
+
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({
+                message: "Invalid product ID",
+            });
+        }
+
+        const product = await Product.findById(id);
+
+        if (!product || !product.isDeleted) {
+            return res.status(404).json({
+                message: "Deleted product not found",
+            });
+        }
+
+        product.isDeleted = false;
+        product.deletedAt = null;
+        product.deletedBy = null;
+        product.deletionReason = "";
+
+        // Only approved products can become available
+        product.isAvailable =
+            product.approvalStatus === "approved";
+
+        addHistory(
+            product,
+            "admin-product-restored",
+            adminId,
+            "Product restored by administrator",
+            "deleted",
+            product.approvalStatus
+        );
+
+        await product.save();
+
+        return res.status(200).json({
+            message: "Product restored successfully",
+            product,
+        });
+
+    } catch (error) {
+        console.error("Admin restore product error:", error);
+
+        return res.status(500).json({
+            message: "Error restoring product",
         });
     }
 }
