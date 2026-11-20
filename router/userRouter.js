@@ -1,12 +1,29 @@
-import express from 'express'
-import { loginUser, registerUser } from '../controllers/userController.js'
+import express from "express";
 
-// Create a new router object
-const userRouter = express.Router()
+import {
+    registerUser,
+    loginUser,
+    verifyEmailOTP,
+    verifyLoginOTP,
+    resendOTP,
+} from "../controllers/userController.js";
 
-userRouter.post("/register", registerUser)
-userRouter.post("/login", loginUser)
+// Create the user router.
+const userRouter = express.Router();
 
+// Register a new account.
+userRouter.post("/register", registerUser);
 
-// Export router so index.js can use it
-export default userRouter
+// Login using email and password.
+userRouter.post("/login", loginUser);
+
+// Verify email after registration.
+userRouter.post("/verify-email", verifyEmailOTP);
+
+// Verify OTP during login.
+userRouter.post("/verify-login-otp", verifyLoginOTP);
+
+// Resend email verification or login OTP.
+userRouter.post("/resend-otp", resendOTP);
+
+export default userRouter;

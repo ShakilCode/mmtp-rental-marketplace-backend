@@ -7,6 +7,8 @@ import mongoose from 'mongoose'
 import userRouter from './router/userRouter.js';
 import authorizeUser from './middleware/jwtMiddleware.js';
 import productRouter from './router/productRouter.js';
+import cookieParser from "cookie-parser";
+import cors from 'cors'
 
 // reads .env file and loads values into process.env
 dotenv.config()
@@ -30,6 +32,15 @@ const app = express()
 
 // Body Parser (middleware)
 app.use(express.json())
+
+// Read trusted device cookies.
+app.use(cookieParser());
+
+// CORS configuration
+app.use(cors({
+    origin: process.env.CLIENT_URL,
+    credentials: true
+}));
 
 // middleware for check jwt token
 app.use(authorizeUser)

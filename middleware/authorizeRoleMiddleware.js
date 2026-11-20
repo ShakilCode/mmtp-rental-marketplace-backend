@@ -1,4 +1,4 @@
-export function authorizeRoles(...allowedRoles) {
+export function authorizerole(...allowedrole) {
     return (req, res, next) => {
 
         // check user
@@ -9,7 +9,7 @@ export function authorizeRoles(...allowedRoles) {
         }
 
         // check role
-        if (!allowedRoles.includes(req.user.role)) {
+        if (!allowedrole.includes(req.user.role)) {
             return res.status(403).json({
                 message: "Access denied"
             })

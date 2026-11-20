@@ -2,14 +2,15 @@
 import express from "express";
 
 import authorizeUser from "../middleware/jwtMiddleware.js";
-import { authorizeRoles } from "../middleware/authorizeRoleMiddleware.js";
+import { authorizerole } from "../middleware/authorizeRoleMiddleware.js";
 
 import {
     addProduct,
     getMyProducts,
     getPublicProducts,
     getPendingProducts,
-    reviewProduct
+    reviewProduct,
+    updateProduct
 } from "../controllers/productController.js";
 
 const productRouter = express.Router();
@@ -24,7 +25,7 @@ productRouter.get(
 productRouter.post(
     "/add",
     authorizeUser,
-    authorizeRoles("lender"),
+    authorizerole("lender"),
     addProduct
 );
 
@@ -32,7 +33,7 @@ productRouter.post(
 productRouter.get(
     "/my",
     authorizeUser,
-    authorizeRoles("lender"),
+    authorizerole("lender"),
     getMyProducts
 );
 
@@ -40,15 +41,23 @@ productRouter.get(
 productRouter.get(
     "/admin/pending",
     authorizeUser,
-    authorizeRoles("admin"),
+    authorizerole("admin"),
     getPendingProducts
+);
+
+// Lender: submit product updates for admin approval
+productRouter.patch(
+    "/:id/update",
+    authorizeUser,
+    authorizerole("lender"),
+    updateProduct
 );
 
 // Admin: approve or reject a product
 productRouter.patch(
     "/admin/:id/review",
     authorizeUser,
-    authorizeRoles("admin"),
+    authorizerole("admin"),
     reviewProduct
 );
 
