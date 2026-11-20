@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import Product from "../models/Product.js";
+import Product from "../models/product.js";
 
 // Create Product (Lender only)
 export async function addProduct(req, res) {

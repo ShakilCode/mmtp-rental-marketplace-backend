@@ -2,7 +2,7 @@
 import express from "express";
 
 import authorizeUser from "../middleware/jwtMiddleware.js";
-import { authorizeRoles } from "../middleware/authorizeRoleMiddleware.js";
+import { authorizerole } from "../middleware/authorizeRoleMiddleware.js";
 
 import {
     addProduct,
@@ -25,7 +25,7 @@ productRouter.get(
 productRouter.post(
     "/add",
     authorizeUser,
-    authorizeRoles("lender"),
+    authorizerole("lender"),
     addProduct
 );
 
@@ -33,7 +33,7 @@ productRouter.post(
 productRouter.get(
     "/my",
     authorizeUser,
-    authorizeRoles("lender"),
+    authorizerole("lender"),
     getMyProducts
 );
 
@@ -41,7 +41,7 @@ productRouter.get(
 productRouter.get(
     "/admin/pending",
     authorizeUser,
-    authorizeRoles("admin"),
+    authorizerole("admin"),
     getPendingProducts
 );
 
@@ -49,7 +49,7 @@ productRouter.get(
 productRouter.patch(
     "/:id/update",
     authorizeUser,
-    authorizeRoles("lender"),
+    authorizerole("lender"),
     updateProduct
 );
 
@@ -57,7 +57,7 @@ productRouter.patch(
 productRouter.patch(
     "/admin/:id/review",
     authorizeUser,
-    authorizeRoles("admin"),
+    authorizerole("admin"),
     reviewProduct
 );
 
