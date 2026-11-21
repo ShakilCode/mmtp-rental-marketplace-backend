@@ -21,27 +21,42 @@ import {
     adminRestoreProduct,
 } from "../controllers/productController.js";
 
+import {
+    uploadProductImages as uploadImagesController
+} from "../controllers/imageUploadController.js";
+
+import {
+    uploadProductImages as uploadMiddleware
+} from "../middleware/uploadMiddleware.js";
+
 const productRouter = express.Router();
 
 
-// Public routes (no authentication required)
+// PUBLIC ROUTES
 
-// View approved products
 productRouter.get(
     "/public",
     getPublicProducts
 );
 
-// View one approved product
 productRouter.get(
     "/public/:id",
     getPublicProductById
 );
 
 
-// Lender routes (authentication and role required)
+// LENDER ROUTES
 
-// Submit a product
+// Upload product images
+productRouter.post(
+    "/upload-images",
+    authorizeUser,
+    authorizerole("lender"),
+    uploadMiddleware,
+    uploadImagesController
+);
+
+// Create product
 productRouter.post(
     "/add",
     authorizeUser,
@@ -49,7 +64,7 @@ productRouter.post(
     addProduct
 );
 
-// View own products
+// View lender's products
 productRouter.get(
     "/my",
     authorizeUser,
@@ -57,7 +72,7 @@ productRouter.get(
     getMyProducts
 );
 
-// View one of own products
+// View one owned product
 productRouter.get(
     "/my/:id",
     authorizeUser,
@@ -65,7 +80,7 @@ productRouter.get(
     getMyProductById
 );
 
-// Update product and submit changes for admin review
+// Update product - requires admin review
 productRouter.patch(
     "/:id/update",
     authorizeUser,
@@ -73,7 +88,7 @@ productRouter.patch(
     updateProduct
 );
 
-// Withdraw own product
+// Withdraw product
 productRouter.delete(
     "/:id",
     authorizeUser,
@@ -82,9 +97,9 @@ productRouter.delete(
 );
 
 
-// Admin routes (authentication and role required)
+// ADMIN ROUTES
 
-// View products waiting for review
+// View all pending initial products and pending updates
 productRouter.get(
     "/admin/pending",
     authorizeUser,
@@ -92,7 +107,7 @@ productRouter.get(
     getPendingProducts
 );
 
-// View and search all products
+// View/search/filter all products
 productRouter.get(
     "/admin/all",
     authorizeUser,
@@ -108,7 +123,7 @@ productRouter.get(
     getAdminProductById
 );
 
-// Approve or reject products and proposed updates
+// Approve/reject new products or updates
 productRouter.patch(
     "/admin/:id/review",
     authorizeUser,
@@ -124,7 +139,7 @@ productRouter.patch(
     adminUpdateProduct
 );
 
-// Admin changes product status
+// Suspend/reapprove/reject product status
 productRouter.patch(
     "/admin/:id/status",
     authorizeUser,
@@ -132,7 +147,7 @@ productRouter.patch(
     adminUpdateProductStatus
 );
 
-// Admin deletes a product
+// Soft-delete product
 productRouter.delete(
     "/admin/:id",
     authorizeUser,
@@ -140,7 +155,7 @@ productRouter.delete(
     adminDeleteProduct
 );
 
-// Admin restores a deleted product
+// Restore deleted product
 productRouter.patch(
     "/admin/:id/restore",
     authorizeUser,

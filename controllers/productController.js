@@ -4,7 +4,11 @@ import { randomBytes } from "crypto";
 import Product from "../models/product.js";
 import User from "../models/userModel.js";
 
-// Valid product conditions
+
+
+// CONSTANTS
+
+
 const VALID_CONDITIONS = [
     "new",
     "like new",
@@ -12,14 +16,12 @@ const VALID_CONDITIONS = [
     "used",
 ];
 
-// Valid product statuses
 const VALID_STATUSES = [
     "approved",
     "rejected",
     "suspended",
 ];
 
-// Fields lenders are allowed to edit
 const EDITABLE_FIELDS = [
     "title",
     "description",
@@ -36,17 +38,26 @@ const EDITABLE_FIELDS = [
     "condition",
 ];
 
-// Get authenticated user ID
+
+
+// HELPERS
+
 function getUserId(user) {
     return user?.id || user?._id;
 }
 
-// Escape special characters in search
 function escapeRegex(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Generate unique product ID
+function cloneData(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    return JSON.parse(JSON.stringify(value));
+}
+
 async function generateProductId() {
     let productId;
 
@@ -55,21 +66,20 @@ async function generateProductId() {
             .toString("hex")
             .toUpperCase()}`;
 
-    } while (
-        await Product.exists({ productId })
-    );
+    } while (await Product.exists({ productId }));
 
     return productId;
 }
 
-// Add moderation history
 function addHistory(
     product,
     action,
     actor,
     note = "",
     fromStatus = null,
-    toStatus = null
+    toStatus = null,
+    changes = null,
+    rejectionReason = ""
 ) {
     product.moderationHistory.push({
         action,
@@ -77,20 +87,19 @@ function addHistory(
         note,
         fromStatus,
         toStatus,
+        changes: cloneData(changes),
+        rejectionReason,
         at: new Date(),
     });
 }
 
-// Validate dates
 function validateDate(value, fieldName) {
     if (
         value === null ||
         value === undefined ||
         value === ""
     ) {
-        return {
-            value: null,
-        };
+        return { value: null };
     }
 
     const date = new Date(value);
@@ -101,17 +110,28 @@ function validateDate(value, fieldName) {
         };
     }
 
-    return {
-        value: date,
-    };
+    return { value: date };
 }
 
-// Validate and sanitize product data
+
+
+// PRODUCT VALIDATION
 function validateProductData(body, partial = false) {
     const data = {};
     const errors = [];
 
-    // Required fields for new products
+    if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body)
+    ) {
+        return {
+            data,
+            errors: ["Invalid request body"],
+        };
+    }
+
+    // Required fields when creating a product
     if (!partial) {
         for (const field of [
             "title",
@@ -133,7 +153,7 @@ function validateProductData(body, partial = false) {
         }
     }
 
-    // Validate text fields
+    // Validate text
     for (const field of [
         "title",
         "description",
@@ -154,26 +174,19 @@ function validateProductData(body, partial = false) {
         data[field] = body[field].trim();
     }
 
-    // Validate text length
-    if (data.title && data.title.length > 150) {
+    if (data.title?.length > 150) {
         errors.push(
             "Title cannot exceed 150 characters"
         );
     }
 
-    if (
-        data.description &&
-        data.description.length > 5000
-    ) {
+    if (data.description?.length > 5000) {
         errors.push(
             "Description cannot exceed 5000 characters"
         );
     }
 
-    if (
-        data.category &&
-        data.category.length > 100
-    ) {
+    if (data.category?.length > 100) {
         errors.push(
             "Category cannot exceed 100 characters"
         );
@@ -190,7 +203,6 @@ function validateProductData(body, partial = false) {
 
         const value = body[field];
 
-        // Optional prices can be null
         if (
             value === null &&
             ["pricePerHour", "oldPrice"].includes(field)
@@ -201,12 +213,11 @@ function validateProductData(body, partial = false) {
 
         if (
             value === "" ||
-            value === undefined ||
             !Number.isFinite(Number(value)) ||
             Number(value) < 0
         ) {
             errors.push(
-                `${field} must be a valid non-negative number`
+                `${field} must be a non-negative number`
             );
             continue;
         }
@@ -214,7 +225,6 @@ function validateProductData(body, partial = false) {
         data[field] = Number(value);
     }
 
-    // Daily rental price must be greater than zero
     if (
         "pricePerDay" in data &&
         data.pricePerDay <= 0
@@ -224,7 +234,7 @@ function validateProductData(body, partial = false) {
         );
     }
 
-    // Validate alternative names
+    // Alternative names
     if ("altNames" in body) {
         if (
             !Array.isArray(body.altNames) ||
@@ -243,14 +253,15 @@ function validateProductData(body, partial = false) {
         }
     }
 
-    // Validate images
+    // Images
     if ("images" in body) {
         if (
             !Array.isArray(body.images) ||
+            body.images.length > 10 ||
             !body.images.every(
                 image =>
                     typeof image === "string" &&
-                    image.trim().length > 0 &&
+                    image.trim() &&
                     (
                         image.trim().startsWith("/images/") ||
                         image.trim().startsWith("https://")
@@ -258,16 +269,15 @@ function validateProductData(body, partial = false) {
             )
         ) {
             errors.push(
-                "Images must contain valid HTTPS URLs or local image paths"
+                "Images must be valid HTTPS URLs or local image paths, with a maximum of 10 images"
             );
         } else {
             data.images = body.images
-                .map(image => image.trim())
-                .slice(0, 10);
+                .map(image => image.trim());
         }
     }
 
-    // Validate availability dates
+    // Availability
     if ("availability" in body) {
         const availability = body.availability;
 
@@ -312,7 +322,7 @@ function validateProductData(body, partial = false) {
         }
     }
 
-    // Validate location
+    // Location
     if ("location" in body) {
         const location = body.location;
 
@@ -344,7 +354,7 @@ function validateProductData(body, partial = false) {
         }
     }
 
-    // Validate availability
+    // Availability toggle
     if ("isAvailable" in body) {
         if (
             typeof body.isAvailable !== "boolean"
@@ -357,7 +367,7 @@ function validateProductData(body, partial = false) {
         }
     }
 
-    // Validate condition
+    // Condition
     if ("condition" in body) {
         if (
             !VALID_CONDITIONS.includes(body.condition)
@@ -370,7 +380,7 @@ function validateProductData(body, partial = false) {
         }
     }
 
-    // Reject unexpected fields
+    // Prevent unauthorized fields
     for (const field of Object.keys(body)) {
         if (!EDITABLE_FIELDS.includes(field)) {
             errors.push(
@@ -398,20 +408,18 @@ export async function addProduct(req, res) {
             });
         }
 
-        // Validate product information
         const { data, errors } = validateProductData(
             req.body,
             false
         );
 
-        if (errors.length > 0) {
+        if (errors.length) {
             return res.status(400).json({
                 message: "Product validation failed",
                 errors,
             });
         }
 
-        // Confirm that the logged-in user is a lender
         const lender = await User.findById(ownerId)
             .select("role isBlocked");
 
@@ -433,14 +441,10 @@ export async function addProduct(req, res) {
             });
         }
 
-        // Generate a product ID on the backend
-        const productId = await generateProductId();
-
-        // Create the product
         const product = await Product.create({
             ...data,
 
-            productId,
+            productId: await generateProductId(),
 
             owner: ownerId,
 
@@ -453,7 +457,6 @@ export async function addProduct(req, res) {
 
             pendingChanges: null,
             pendingUpdateStatus: null,
-
             pendingUpdateRejectionReason: "",
             pendingUpdateReviewedBy: null,
             pendingUpdateReviewedAt: null,
@@ -462,7 +465,7 @@ export async function addProduct(req, res) {
             isDeleted: false,
 
             images:
-                data.images?.length > 0
+                data.images?.length
                     ? data.images
                     : ["/images/default-product.png"],
 
@@ -474,8 +477,6 @@ export async function addProduct(req, res) {
                 startDate: null,
                 endDate: null,
             },
-
-            location: data.location,
 
             moderationHistory: [
                 {
@@ -490,7 +491,7 @@ export async function addProduct(req, res) {
         });
 
         return res.status(201).json({
-            message: "Product submitted successfully. Waiting for admin approval.",
+            message: "Product submitted for admin approval",
             product,
         });
 
@@ -539,7 +540,7 @@ export async function getMyProducts(req, res) {
 
 
 
-// LENDER: VIEW ONE OF THEIR PRODUCTS
+// LENDER: VIEW ONE OWNED PRODUCT
 export async function getMyProductById(req, res) {
     try {
         const { id } = req.params;
@@ -578,7 +579,7 @@ export async function getMyProductById(req, res) {
 
 
 
-// PUBLIC: VIEW APPROVED PRODUCTS
+// PUBLIC: VIEW PRODUCTS
 export async function getPublicProducts(req, res) {
     try {
         const {
@@ -592,7 +593,6 @@ export async function getPublicProducts(req, res) {
             limit = 12,
         } = req.query;
 
-        // Pagination
         const currentPage = Math.max(
             1,
             Number.parseInt(page, 10) || 1
@@ -606,14 +606,12 @@ export async function getPublicProducts(req, res) {
             )
         );
 
-        // Only approved products can appear publicly
         const filter = {
             approvalStatus: "approved",
             isAvailable: true,
             isDeleted: false,
         };
 
-        // Search products
         if (
             typeof search === "string" &&
             search.trim()
@@ -648,7 +646,6 @@ export async function getPublicProducts(req, res) {
             );
         }
 
-        // Validate price filters
         if (
             minPrice !== undefined &&
             (
@@ -673,7 +670,6 @@ export async function getPublicProducts(req, res) {
             });
         }
 
-        // Apply price range
         if (
             minPrice !== undefined ||
             maxPrice !== undefined
@@ -691,10 +687,20 @@ export async function getPublicProducts(req, res) {
             }
         }
 
+        if (
+            minPrice !== undefined &&
+            maxPrice !== undefined &&
+            Number(minPrice) > Number(maxPrice)
+        ) {
+            return res.status(400).json({
+                message: "Minimum price cannot exceed maximum price",
+            });
+        }
+
         const [products, total] = await Promise.all([
             Product.find(filter)
                 .select(
-                    "-moderationHistory -pendingChanges -rejectionReason -reviewedBy"
+                    "-moderationHistory -pendingChanges -pendingUpdateRejectionReason -rejectionReason -reviewedBy -pendingUpdateReviewedBy -pendingUpdateReviewedAt -deletedBy -deletionReason"
                 )
                 .sort({ createdAt: -1 })
                 .skip((currentPage - 1) * pageSize)
@@ -723,21 +729,17 @@ export async function getPublicProducts(req, res) {
 
 
 
-// PUBLIC: VIEW ONE APPROVED PRODUCT
+// PUBLIC: VIEW ONE PRODUCT
 export async function getPublicProductById(req, res) {
     try {
         const { id } = req.params;
 
         const conditions = [
-            {
-                productId: id,
-            },
+            { productId: id },
         ];
 
         if (mongoose.isValidObjectId(id)) {
-            conditions.push({
-                _id: id,
-            });
+            conditions.push({ _id: id });
         }
 
         const product = await Product.findOne({
@@ -748,7 +750,7 @@ export async function getPublicProductById(req, res) {
             isDeleted: false,
         })
             .select(
-                "-moderationHistory -pendingChanges -rejectionReason -reviewedBy"
+                "-moderationHistory -pendingChanges -pendingUpdateRejectionReason -rejectionReason -reviewedBy -pendingUpdateReviewedBy -pendingUpdateReviewedAt -deletedBy -deletionReason"
             )
             .lean();
 
@@ -773,30 +775,58 @@ export async function getPublicProductById(req, res) {
 
 
 
-// ADMIN: VIEW PENDING PRODUCTS
+// ADMIN: VIEW PENDING PRODUCTS AND UPDATES
 export async function getPendingProducts(req, res) {
     try {
-        const products = await Product.find({
+        const initialPending = await Product.find({
             isDeleted: false,
-
-            $or: [
-                {
-                    approvalStatus: "pending",
-                },
-                {
-                    pendingChanges: { $ne: null },
-                    pendingUpdateStatus: "pending",
-                },
-            ],
+            approvalStatus: "pending",
         })
             .populate(
                 "owner",
-                "firstName lastName email phone isPhoneVerified role"
+                "firstName lastName email phone isPhoneVerified role isBlocked"
             )
-            .sort({ createdAt: 1 });
+            .sort({ createdAt: 1 })
+            .lean();
+
+        const updatesPending = await Product.find({
+            isDeleted: false,
+            approvalStatus: "approved",
+            pendingUpdateStatus: "pending",
+            pendingChanges: { $ne: null },
+        })
+            .populate(
+                "owner",
+                "firstName lastName email phone isPhoneVerified role isBlocked"
+            )
+            .sort({ updatedAt: 1 })
+            .lean();
+
+        const initialReviews = initialPending.map(product => ({
+            ...product,
+            reviewType: "new_product",
+            proposedChanges: null,
+        }));
+
+        const updateReviews = updatesPending.map(product => ({
+            ...product,
+            reviewType: "product_update",
+            proposedChanges: product.pendingChanges,
+        }));
+
+        const products = [
+            ...initialReviews,
+            ...updateReviews,
+        ].sort(
+            (a, b) =>
+                new Date(a.createdAt) -
+                new Date(b.createdAt)
+        );
 
         return res.status(200).json({
             count: products.length,
+            newProductsCount: initialReviews.length,
+            pendingUpdatesCount: updateReviews.length,
             products,
         });
 
@@ -804,14 +834,14 @@ export async function getPendingProducts(req, res) {
         console.error("Get pending products error:", error);
 
         return res.status(500).json({
-            message: "Error retrieving pending products",
+            message: "Error retrieving pending reviews",
         });
     }
 }
 
 
 
-// ADMIN: VIEW AND SEARCH ALL PRODUCTS
+// ADMIN: VIEW ALL PRODUCTS
 export async function getAdminProducts(req, res) {
     try {
         const {
@@ -863,7 +893,6 @@ export async function getAdminProducts(req, res) {
             filter.category = category;
         }
 
-        // Admin search
         if (
             typeof search === "string" &&
             search.trim()
@@ -891,9 +920,14 @@ export async function getAdminProducts(req, res) {
                     "reviewedBy",
                     "firstName lastName email"
                 )
+                .populate(
+                    "pendingUpdateReviewedBy",
+                    "firstName lastName email"
+                )
                 .sort({ createdAt: -1 })
                 .skip((currentPage - 1) * pageSize)
-                .limit(pageSize),
+                .limit(pageSize)
+                .lean(),
 
             Product.countDocuments(filter),
         ]);
@@ -971,7 +1005,12 @@ export async function getAdminProductById(req, res) {
 export async function reviewProduct(req, res) {
     try {
         const { id } = req.params;
-        const { status, rejectionReason } = req.body;
+
+        const {
+            status,
+            rejectionReason = "",
+            note = "",
+        } = req.body;
 
         const adminId = getUserId(req.user);
 
@@ -981,7 +1020,9 @@ export async function reviewProduct(req, res) {
             });
         }
 
-        if (!["approved", "rejected"].includes(status)) {
+        if (
+            !["approved", "rejected"].includes(status)
+        ) {
             return res.status(400).json({
                 message: "Status must be approved or rejected",
             });
@@ -1007,22 +1048,24 @@ export async function reviewProduct(req, res) {
             });
         }
 
-        // Review proposed changes
+        // ====================================
+        // REVIEW PROPOSED PRODUCT UPDATE
+        // ====================================
+
         if (
-            product.pendingChanges !== null &&
-            product.pendingUpdateStatus === "pending"
+            product.approvalStatus === "approved" &&
+            product.pendingUpdateStatus === "pending" &&
+            product.pendingChanges !== null
         ) {
-            if (product.approvalStatus !== "approved") {
-                return res.status(409).json({
-                    message: "Invalid product update review state",
-                });
-            }
+            const proposedChanges =
+                cloneData(product.pendingChanges);
 
             if (status === "approved") {
-                const changes = product.pendingChanges;
-
-                // Apply approved changes
-                for (const [field, value] of Object.entries(changes)) {
+                // Apply proposed changes to the original listing
+                for (
+                    const [field, value]
+                    of Object.entries(proposedChanges)
+                ) {
                     if (EDITABLE_FIELDS.includes(field)) {
                         product.set(field, value);
                     }
@@ -1030,6 +1073,7 @@ export async function reviewProduct(req, res) {
 
                 product.pendingUpdateStatus = "approved";
                 product.pendingUpdateRejectionReason = "";
+
                 product.pendingUpdateReviewedBy = adminId;
                 product.pendingUpdateReviewedAt = new Date();
 
@@ -1039,20 +1083,22 @@ export async function reviewProduct(req, res) {
                     product,
                     "product-update-approved",
                     adminId,
-                    "Proposed changes approved",
+                    note.trim(),
+                    "update-pending",
                     "approved",
-                    "approved"
+                    proposedChanges
                 );
 
                 await product.save();
 
                 return res.status(200).json({
                     message: "Product update approved successfully",
+                    reviewType: "product_update",
                     product,
                 });
             }
 
-            // Reject proposed changes
+            // Reject proposal but preserve it in audit history
             product.pendingUpdateStatus = "rejected";
 
             product.pendingUpdateRejectionReason =
@@ -1067,29 +1113,37 @@ export async function reviewProduct(req, res) {
                 product,
                 "product-update-rejected",
                 adminId,
-                rejectionReason.trim(),
-                "approved",
-                "approved"
+                note.trim(),
+                "update-pending",
+                "rejected",
+                proposedChanges,
+                rejectionReason.trim()
             );
 
             await product.save();
 
             return res.status(200).json({
                 message: "Product update rejected. Original listing remains unchanged.",
+                reviewType: "product_update",
                 product,
             });
         }
 
-        // Review new product
+        // ====================================
+        // REVIEW NEW PRODUCT
+        // ====================================
+
         if (product.approvalStatus !== "pending") {
             return res.status(409).json({
                 message: "Product is not awaiting initial approval",
             });
         }
 
-        const previousStatus = product.approvalStatus;
+        const previousStatus =
+            product.approvalStatus;
 
         product.approvalStatus = status;
+
         product.reviewedBy = adminId;
         product.reviewedAt = new Date();
 
@@ -1098,29 +1152,25 @@ export async function reviewProduct(req, res) {
                 ? rejectionReason.trim()
                 : "";
 
-        // Approved product becomes available
-        if (status === "approved") {
-            product.isAvailable = true;
-        }
-
-        // Rejected product is hidden
-        if (status === "rejected") {
-            product.isAvailable = false;
-        }
+        product.isAvailable =
+            status === "approved";
 
         addHistory(
             product,
             `product-${status}`,
             adminId,
-            rejectionReason?.trim() || "",
+            note.trim(),
             previousStatus,
-            status
+            status,
+            null,
+            rejectionReason.trim()
         );
 
         await product.save();
 
         return res.status(200).json({
             message: `Product ${status} successfully`,
+            reviewType: "new_product",
             product,
         });
 
@@ -1159,20 +1209,18 @@ export async function updateProduct(req, res) {
             });
         }
 
-        // Cannot edit while initial approval is pending
         if (product.approvalStatus === "pending") {
             return res.status(409).json({
                 message: "Your product is awaiting initial approval",
             });
         }
 
-        // Prevent duplicate pending updates
         if (
             product.pendingUpdateStatus === "pending" &&
             product.pendingChanges !== null
         ) {
             return res.status(409).json({
-                message: "Your previous product update is awaiting admin review",
+                message: "Your previous update is awaiting admin review",
             });
         }
 
@@ -1181,24 +1229,28 @@ export async function updateProduct(req, res) {
             true
         );
 
-        if (errors.length > 0) {
+        if (errors.length) {
             return res.status(400).json({
                 message: "Product update validation failed",
                 errors,
             });
         }
 
-        if (Object.keys(data).length === 0) {
+        if (!Object.keys(data).length) {
             return res.status(400).json({
                 message: "No valid product fields provided",
             });
         }
 
-        // Resubmit rejected products for approval
+        // Resubmit rejected product
         if (product.approvalStatus === "rejected") {
-            const previousStatus = product.approvalStatus;
+            const previousStatus =
+                product.approvalStatus;
 
-            for (const [field, value] of Object.entries(data)) {
+            for (
+                const [field, value]
+                of Object.entries(data)
+            ) {
                 product.set(field, value);
             }
 
@@ -1207,7 +1259,6 @@ export async function updateProduct(req, res) {
 
             product.reviewedBy = null;
             product.reviewedAt = null;
-
             product.rejectionReason = "";
 
             product.pendingChanges = null;
@@ -1222,25 +1273,25 @@ export async function updateProduct(req, res) {
                 ownerId,
                 "Rejected product corrected and resubmitted",
                 previousStatus,
-                "pending"
+                "pending",
+                data
             );
 
             await product.save();
 
             return res.status(200).json({
-                message: "Product corrected and resubmitted for admin approval",
+                message: "Product corrected and resubmitted for approval",
                 product,
             });
         }
 
-        // Suspended products cannot be edited by lenders
         if (product.approvalStatus === "suspended") {
             return res.status(403).json({
                 message: "This product is suspended. Contact the administrator.",
             });
         }
 
-        // Approved product updates require admin approval
+        // Approved listing: changes go to admin review
         if (product.approvalStatus === "approved") {
             product.pendingChanges = data;
             product.pendingUpdateStatus = "pending";
@@ -1255,13 +1306,14 @@ export async function updateProduct(req, res) {
                 ownerId,
                 "Changes submitted for admin review",
                 "approved",
-                "update-pending"
+                "update-pending",
+                data
             );
 
             await product.save();
 
             return res.status(200).json({
-                message: "Product update submitted. Waiting for admin approval.",
+                message: "Product update submitted for admin approval",
                 product,
             });
         }
@@ -1281,7 +1333,7 @@ export async function updateProduct(req, res) {
 
 
 
-// ADMIN: DIRECTLY UPDATE ANY PRODUCT
+// ADMIN: DIRECT UPDATE PRODUCT
 export async function adminUpdateProduct(req, res) {
     try {
         const { id } = req.params;
@@ -1306,39 +1358,43 @@ export async function adminUpdateProduct(req, res) {
             true
         );
 
-        if (errors.length > 0) {
+        if (errors.length) {
             return res.status(400).json({
                 message: "Product update validation failed",
                 errors,
             });
         }
 
-        if (Object.keys(data).length === 0) {
+        if (!Object.keys(data).length) {
             return res.status(400).json({
                 message: "No valid product fields provided",
             });
         }
 
-        // Apply admin changes immediately
-        for (const [field, value] of Object.entries(data)) {
-            product.set(field, value);
-        }
-
-        // Clear pending lender changes
-        product.pendingChanges = null;
-        product.pendingUpdateStatus = null;
-        product.pendingUpdateRejectionReason = "";
-        product.pendingUpdateReviewedBy = null;
-        product.pendingUpdateReviewedAt = null;
-
+        // Record the admin changes
         addHistory(
             product,
             "admin-product-updated",
             adminId,
             "Product updated directly by administrator",
             product.approvalStatus,
-            product.approvalStatus
+            product.approvalStatus,
+            data
         );
+
+        for (
+            const [field, value]
+            of Object.entries(data)
+        ) {
+            product.set(field, value);
+        }
+
+        // Clear lender proposal after admin intervention
+        product.pendingChanges = null;
+        product.pendingUpdateStatus = null;
+        product.pendingUpdateRejectionReason = "";
+        product.pendingUpdateReviewedBy = null;
+        product.pendingUpdateReviewedAt = null;
 
         await product.save();
 
@@ -1362,7 +1418,11 @@ export async function adminUpdateProduct(req, res) {
 export async function adminUpdateProductStatus(req, res) {
     try {
         const { id } = req.params;
-        const { status, reason } = req.body;
+
+        const {
+            status,
+            reason = "",
+        } = req.body;
 
         const adminId = getUserId(req.user);
 
@@ -1398,9 +1458,18 @@ export async function adminUpdateProductStatus(req, res) {
             });
         }
 
-        const previousStatus = product.approvalStatus;
+        // Initial pending products must use the review endpoint
+        if (product.approvalStatus === "pending") {
+            return res.status(409).json({
+                message: "Use the product review endpoint for pending products",
+            });
+        }
+
+        const previousStatus =
+            product.approvalStatus;
 
         product.approvalStatus = status;
+
         product.reviewedBy = adminId;
         product.reviewedAt = new Date();
 
@@ -1409,25 +1478,18 @@ export async function adminUpdateProductStatus(req, res) {
                 ? reason.trim()
                 : "";
 
-        // Rejected and suspended products are hidden
-        if (
-            ["rejected", "suspended"].includes(status)
-        ) {
-            product.isAvailable = false;
-        }
-
-        // Approved products become available
-        if (status === "approved") {
-            product.isAvailable = true;
-        }
+        product.isAvailable =
+            status === "approved";
 
         addHistory(
             product,
             `admin-status-${status}`,
             adminId,
-            reason?.trim() || "",
+            reason.trim(),
             previousStatus,
-            status
+            status,
+            null,
+            reason.trim()
         );
 
         await product.save();
@@ -1438,7 +1500,7 @@ export async function adminUpdateProductStatus(req, res) {
         });
 
     } catch (error) {
-        console.error("Admin update product status error:", error);
+        console.error("Admin status update error:", error);
 
         return res.status(500).json({
             message: "Error updating product status",
@@ -1448,7 +1510,7 @@ export async function adminUpdateProductStatus(req, res) {
 
 
 
-// LENDER: WITHDRAW OWN PRODUCT
+// LENDER: WITHDRAW PRODUCT
 export async function deleteMyProduct(req, res) {
     try {
         const { id } = req.params;
@@ -1472,13 +1534,11 @@ export async function deleteMyProduct(req, res) {
             });
         }
 
-        // Soft delete
         product.isDeleted = true;
         product.deletedAt = new Date();
         product.deletedBy = ownerId;
         product.deletionReason =
             "Withdrawn by product owner";
-
         product.isAvailable = false;
 
         addHistory(
@@ -1546,7 +1606,9 @@ export async function adminDeleteProduct(req, res) {
             adminId,
             product.deletionReason,
             product.approvalStatus,
-            "deleted"
+            "deleted",
+            null,
+            product.deletionReason
         );
 
         await product.save();
@@ -1566,7 +1628,7 @@ export async function adminDeleteProduct(req, res) {
 
 
 
-// ADMIN: RESTORE DELETED PRODUCT
+// ADMIN: RESTORE PRODUCT
 export async function adminRestoreProduct(req, res) {
     try {
         const { id } = req.params;
@@ -1591,7 +1653,6 @@ export async function adminRestoreProduct(req, res) {
         product.deletedBy = null;
         product.deletionReason = "";
 
-        // Only approved products can become available
         product.isAvailable =
             product.approvalStatus === "approved";
 

@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-// Product moderation history schema
+// Product moderation history
 const moderationHistorySchema = new mongoose.Schema(
     {
         action: {
@@ -17,6 +17,19 @@ const moderationHistorySchema = new mongoose.Schema(
         note: {
             type: String,
             default: "",
+            maxlength: 2000,
+        },
+
+        rejectionReason: {
+            type: String,
+            default: "",
+            maxlength: 2000,
+        },
+
+        // Preserve proposed or changed fields for audit purposes
+        changes: {
+            type: mongoose.Schema.Types.Mixed,
+            default: null,
         },
 
         fromStatus: {
@@ -39,10 +52,10 @@ const moderationHistorySchema = new mongoose.Schema(
     }
 );
 
-// Rental Product Schema
+// Product Schema
 const productSchema = new mongoose.Schema(
     {
-        // Public readable product ID
+        // Unique public product reference
         productId: {
             type: String,
             required: true,
@@ -50,7 +63,6 @@ const productSchema = new mongoose.Schema(
             trim: true,
         },
 
-        // Product title
         title: {
             type: String,
             required: true,
@@ -58,7 +70,6 @@ const productSchema = new mongoose.Schema(
             maxlength: 150,
         },
 
-        // Product description
         description: {
             type: String,
             required: true,
@@ -66,49 +77,43 @@ const productSchema = new mongoose.Schema(
             maxlength: 5000,
         },
 
-        // Alternative names for searching
         altNames: {
             type: [String],
             default: [],
         },
 
-        // Product category
         category: {
             type: String,
-            default: "Others",
             required: true,
             trim: true,
+            maxlength: 100,
+            default: "Others",
         },
 
-        // Rental price per day
         pricePerDay: {
             type: Number,
             required: true,
             min: 0,
         },
 
-        // Optional rental price per hour
         pricePerHour: {
             type: Number,
             default: null,
             min: 0,
         },
 
-        // Previous price
         oldPrice: {
             type: Number,
             default: null,
             min: 0,
         },
 
-        // Security deposit
         deposit: {
             type: Number,
             default: 0,
             min: 0,
         },
 
-        // Availability period
         availability: {
             startDate: {
                 type: Date,
@@ -121,7 +126,6 @@ const productSchema = new mongoose.Schema(
             },
         },
 
-        // Product owner
         owner: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
@@ -129,20 +133,18 @@ const productSchema = new mongoose.Schema(
             index: true,
         },
 
-        // Admin who reviewed the initial listing
+        // Admin review of initial product
         reviewedBy: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
             default: null,
         },
 
-        // Initial review date
         reviewedAt: {
             type: Date,
             default: null,
         },
 
-        // Location
         location: {
             city: {
                 type: String,
@@ -163,51 +165,45 @@ const productSchema = new mongoose.Schema(
             },
         },
 
-        // Product images
         images: {
             type: [String],
             default: ["/images/default-product.png"],
         },
 
-        // Availability toggle
         isAvailable: {
             type: Boolean,
             default: true,
         },
 
-        // Proposed product changes waiting for admin approval
+        // Lender's proposed update
         pendingChanges: {
             type: mongoose.Schema.Types.Mixed,
             default: null,
         },
 
-        // Status of proposed changes
         pendingUpdateStatus: {
             type: String,
             enum: ["pending", "approved", "rejected", null],
             default: null,
         },
 
-        // Proposed update rejection reason
         pendingUpdateRejectionReason: {
             type: String,
             default: "",
+            maxlength: 2000,
         },
 
-        // Admin who reviewed proposed changes
         pendingUpdateReviewedBy: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
             default: null,
         },
 
-        // Proposed changes review date
         pendingUpdateReviewedAt: {
             type: Date,
             default: null,
         },
 
-        // Product approval status
         approvalStatus: {
             type: String,
             enum: [
@@ -220,17 +216,16 @@ const productSchema = new mongoose.Schema(
             index: true,
         },
 
-        // Product condition
         condition: {
             type: String,
             enum: ["new", "like new", "good", "used"],
             default: "good",
         },
 
-        // Initial product rejection reason
         rejectionReason: {
             type: String,
             default: "",
+            maxlength: 2000,
         },
 
         // Soft deletion
@@ -254,9 +249,10 @@ const productSchema = new mongoose.Schema(
         deletionReason: {
             type: String,
             default: "",
+            maxlength: 2000,
         },
 
-        // Product moderation history
+        // Auditable moderation history
         moderationHistory: {
             type: [moderationHistorySchema],
             default: [],
@@ -267,7 +263,7 @@ const productSchema = new mongoose.Schema(
     }
 );
 
-// Useful indexes
+// Indexes
 productSchema.index({
     approvalStatus: 1,
     isAvailable: 1,
@@ -284,7 +280,13 @@ productSchema.index({
     "location.city": 1,
 });
 
-// Create model
+productSchema.index({
+    title: "text",
+    description: "text",
+    altNames: "text",
+});
+
+// Model
 const Product = mongoose.model("Product", productSchema);
 
 export default Product;
